@@ -87,13 +87,14 @@ class WebScraper:
         else:
             self.headers['Referer'] = referer
     
-    def fetch_page(self, url: str, cookies=None) -> Optional[Dict[str, str]]:
+    def fetch_page(self, url: str, cookies=None, allow_redirects=True) -> Optional[Dict[str, str]]:
         """
-        抓取网页内容
+        抓取网页内容（支持处理重定向和跳转）
         
         Args:
             url: 要抓取的URL
             cookies: 可选的Cookie（会临时覆盖已有的Cookie）
+            allow_redirects: 是否允许重定向（默认True）
             
         Returns:
             包含title和content的字典，如果失败返回None
@@ -117,12 +118,32 @@ class WebScraper:
                                 temp_cookies[key] = value
                     else:
                         temp_cookies.update(cookies)
-                    response = self.session.get(url, cookies=temp_cookies, timeout=self.timeout)
+                    response = self.session.get(
+                        url, 
+                        cookies=temp_cookies, 
+                        timeout=self.timeout,
+                        allow_redirects=allow_redirects
+                    )
                 else:
-                    response = self.session.get(url, timeout=self.timeout)
+                    response = self.session.get(
+                        url, 
+                        timeout=self.timeout,
+                        allow_redirects=allow_redirects
+                    )
             else:
                 request_cookies = cookies or getattr(self, 'cookies', None)
-                response = requests.get(url, headers=self.headers, cookies=request_cookies, timeout=self.timeout)
+                response = requests.get(
+                    url, 
+                    headers=self.headers, 
+                    cookies=request_cookies, 
+                    timeout=self.timeout,
+                    allow_redirects=allow_redirects
+                )
+            
+            # 记录最终URL（可能经过重定向）
+            final_url = response.url
+            if final_url != url:
+                logger.info(f"页面发生重定向: {url} -> {final_url}")
             
             response.raise_for_status()
             
@@ -144,14 +165,16 @@ class WebScraper:
             # 提取正文内容
             content = self._extract_content(soup)
             
-            logger.info(f"成功抓取页面: {url}, 标题: {title}")
+            logger.info(f"成功抓取页面: {final_url}, 标题: {title}")
             
             return {
-                'url': url,
+                'url': final_url,  # 返回最终URL
+                'original_url': url,  # 保留原始URL
                 'title': title,
                 'content': content,
                 'status_code': response.status_code,
-                'cookies': dict(response.cookies) if hasattr(response, 'cookies') else None
+                'cookies': dict(response.cookies) if hasattr(response, 'cookies') else None,
+                'redirected': final_url != url  # 是否发生重定向
             }
             
         except requests.exceptions.RequestException as e:

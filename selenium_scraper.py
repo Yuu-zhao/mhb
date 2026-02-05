@@ -90,23 +90,71 @@ class SeleniumScraper:
             logger.error(f"登录失败: {str(e)}")
             raise
     
-    def fetch_page(self, url: str, wait_for_element=None, wait_selector=None) -> Optional[Dict[str, str]]:
+    def fetch_page(self, url: str, wait_for_element=None, wait_selector=None, 
+                   wait_for_url_change=True, wait_timeout=None) -> Optional[Dict[str, str]]:
         """
-        抓取网页内容（支持JavaScript渲染）
+        抓取网页内容（支持JavaScript渲染和页面跳转）
         
         Args:
             url: 要抓取的URL
             wait_for_element: 等待的元素选择器（CSS选择器或XPath）
             wait_selector: 等待的选择器类型（'css' 或 'xpath'），默认为CSS
+            wait_for_url_change: 是否等待URL变化（处理跳转页面），默认True
+            wait_timeout: 等待超时时间（秒），如果为None则使用self.wait_time
             
         Returns:
             包含title和content的字典，如果失败返回None
         """
         try:
             logger.info(f"正在抓取页面: {url}")
+            original_url = url
             self.driver.get(url)
             
-            # 等待页面加载
+            # 等待URL变化（处理中间跳转页）
+            if wait_for_url_change:
+                timeout = wait_timeout or self.wait_time
+                try:
+                    # 等待URL稳定（不再变化）
+                    max_wait = timeout
+                    check_interval = 0.5
+                    last_url = self.driver.current_url
+                    stable_count = 0
+                    required_stable = 2  # URL需要稳定2次检查才认为完成
+                    
+                    for _ in range(int(max_wait / check_interval)):
+                        time.sleep(check_interval)
+                        current_url = self.driver.current_url
+                        
+                        if current_url != last_url:
+                            logger.info(f"检测到URL变化: {last_url} -> {current_url}")
+                            stable_count = 0
+                            last_url = current_url
+                        else:
+                            stable_count += 1
+                            if stable_count >= required_stable:
+                                logger.info(f"URL已稳定: {current_url}")
+                                break
+                    
+                    final_url = self.driver.current_url
+                    if final_url != original_url:
+                        logger.info(f"页面发生跳转: {original_url} -> {final_url}")
+                    
+                except Exception as e:
+                    logger.warning(f"等待URL变化时出错: {str(e)}")
+            
+            # 等待页面加载完成（通过document.readyState）
+            try:
+                WebDriverWait(self.driver, self.wait_time).until(
+                    lambda driver: driver.execute_script('return document.readyState') == 'complete'
+                )
+                logger.info("页面加载完成")
+            except TimeoutException:
+                logger.warning("等待页面加载超时，继续处理")
+            
+            # 额外等待一小段时间，确保JavaScript执行完成
+            time.sleep(1)
+            
+            # 等待特定元素（如果指定）
             if wait_for_element:
                 try:
                     wait = WebDriverWait(self.driver, self.wait_time)
@@ -119,7 +167,10 @@ class SeleniumScraper:
                     logger.warning("等待元素超时，继续处理页面内容")
             else:
                 # 默认等待页面基本加载完成
-                time.sleep(2)
+                time.sleep(1)
+            
+            # 获取最终URL
+            final_url = self.driver.current_url
             
             # 获取页面源码
             page_source = self.driver.page_source
@@ -133,12 +184,14 @@ class SeleniumScraper:
             # 提取正文内容
             content = self._extract_content(soup)
             
-            logger.info(f"成功抓取页面: {url}, 标题: {title}")
+            logger.info(f"成功抓取页面: {final_url}, 标题: {title}")
             
             return {
-                'url': url,
+                'url': final_url,  # 返回最终URL
+                'original_url': original_url,  # 保留原始URL
                 'title': title,
-                'content': content
+                'content': content,
+                'redirected': final_url != original_url  # 是否发生跳转
             }
             
         except WebDriverException as e:

@@ -675,27 +675,6 @@ HTML_TEMPLATE = """
                 startWorkflow();
             }
         });
-
-        // 检查Playwright是否已安装
-        function checkPlaywrightInstalled() {
-            fetch('/api/check_playwright')
-            .then(response => response.json())
-            .then(data => {
-                if (!data.installed) {
-                    document.getElementById('playwright_warning').style.display = 'block';
-                    document.getElementById('playwright_desc').style.color = '#856404';
-                    document.getElementById('playwright_desc').textContent = '⚠️ Playwright: 浏览器未安装，请先运行 playwright install';
-                }
-            })
-            .catch(error => {
-                console.error('检查Playwright状态失败:', error);
-            });
-        }
-
-        // 页面加载时检查
-        window.addEventListener('load', function() {
-            checkPlaywrightInstalled();
-        });
     </script>
 </body>
 </html>
@@ -705,52 +684,6 @@ HTML_TEMPLATE = """
 def index():
     """主页"""
     return render_template_string(HTML_TEMPLATE)
-
-@app.route('/api/check_playwright', methods=['GET'])
-def api_check_playwright():
-    """检查Playwright是否已安装（安全版本，只检查文件，不启动浏览器）"""
-    try:
-        # 使用文件检查方式，避免启动浏览器导致崩溃
-        from pathlib import Path
-        
-        # 检查Playwright浏览器是否存在（macOS路径）
-        home = Path.home()
-        playwright_cache = home / "Library" / "Caches" / "ms-playwright"
-        
-        if not playwright_cache.exists():
-            return jsonify({
-                'success': True,
-                'installed': False,
-                'message': 'Playwright浏览器未安装，请运行 playwright install'
-            })
-        
-        # 检查是否有chromium（不实际启动，只检查文件）
-        chromium_dirs = list(playwright_cache.glob("chromium-*"))
-        if chromium_dirs:
-            # 检查是否有可执行文件
-            for chromium_dir in chromium_dirs:
-                chrome_mac = chromium_dir / "chrome-mac" / "Chromium.app" / "Contents" / "MacOS" / "Chromium"
-                if chrome_mac.exists():
-                    return jsonify({
-                        'success': True,
-                        'installed': True,
-                        'message': 'Playwright已安装'
-                    })
-        
-        return jsonify({
-            'success': True,
-            'installed': False,
-            'message': 'Playwright浏览器未安装，请运行 playwright install'
-        })
-            
-    except Exception as e:
-        logger.error(f"检查Playwright失败: {str(e)}")
-        # 发生错误时默认返回未安装，避免崩溃
-        return jsonify({
-            'success': True,
-            'installed': False,
-            'message': 'Playwright浏览器未安装，请运行 playwright install'
-        })
 
 @app.route('/api/check_login', methods=['POST'])
 def api_check_login():
@@ -796,63 +729,6 @@ def api_check_login():
         logger.error(f"检测登录需求失败: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
 
-def check_playwright_installed():
-    """检查Playwright是否已安装浏览器（安全版本，避免段错误）"""
-    try:
-        from playwright.sync_api import sync_playwright
-    except ImportError:
-        return False
-    
-    playwright = None
-    browser = None
-    
-    try:
-        # 使用超时和更安全的启动方式
-        playwright = sync_playwright().start()
-        browser_type = playwright.chromium
-        
-        # 尝试启动浏览器（headless模式，快速检查）
-        # 使用更短的超时时间，避免长时间等待
-        browser = browser_type.launch(
-            headless=True,
-            timeout=5000  # 5秒超时
-        )
-        
-        # 立即关闭，不等待
-        if browser:
-            browser.close()
-            browser = None
-        
-        return True
-        
-    except Exception as e:
-        error_msg = str(e)
-        # 检查是否是浏览器未安装的错误
-        if "Executable doesn't exist" in error_msg or "playwright install" in error_msg.lower():
-            return False
-        # 其他错误（包括超时）也返回False，避免崩溃
-        logger.debug(f"Playwright检查出错: {str(e)}")
-        return False
-    finally:
-        # 确保资源被正确清理，使用更安全的方式
-        try:
-            if browser:
-                try:
-                    browser.close()
-                except:
-                    pass
-        except:
-            pass
-        
-        try:
-            if playwright:
-                try:
-                    playwright.stop()
-                except:
-                    pass
-        except:
-            pass
-
 @app.route('/api/auto_get_cookie', methods=['POST'])
 def api_auto_get_cookie():
     """自动获取Cookie（使用Playwright）"""
@@ -862,17 +738,6 @@ def api_auto_get_cookie():
         
         if not url:
             return jsonify({'success': False, 'error': 'URL不能为空'})
-        
-        # 检查Playwright是否已安装
-        if not check_playwright_installed():
-            error_msg = (
-                "Playwright浏览器未安装！\n\n"
-                "请运行以下命令安装：\n"
-                "  playwright install\n\n"
-                "或者安装Chromium：\n"
-                "  playwright install chromium"
-            )
-            return jsonify({'success': False, 'error': error_msg})
         
         # 提取域名
         from urllib.parse import urlparse
@@ -975,47 +840,15 @@ def api_fetch():
             return jsonify({'success': False, 'error': 'URL不能为空'})
 
         if method == 'playwright':
-            # 检查Playwright是否已安装
-            if not check_playwright_installed():
-                return jsonify({
-                    'success': False, 
-                    'error': 'Playwright浏览器未安装，请运行 "playwright install" 安装浏览器，或选择其他抓取方法'
-                })
-            
-            scraper = None
+            if storage_state_path and os.path.exists(storage_state_path):
+                scraper = PlaywrightScraper(headless=True, storage_state_path=storage_state_path)
+            else:
+                scraper = PlaywrightScraper(headless=True)
             try:
-                # 验证登录态文件
-                valid_storage_state = None
-                if storage_state_path and os.path.exists(storage_state_path):
-                    try:
-                        import json
-                        with open(storage_state_path, 'r', encoding='utf-8') as f:
-                            content = f.read().strip()
-                            if content:
-                                storage_data = json.loads(content)
-                                if isinstance(storage_data, dict) and ('cookies' in storage_data or 'origins' in storage_data):
-                                    valid_storage_state = storage_state_path
-                                else:
-                                    logger.warning(f"登录态文件格式无效，将不使用登录态")
-                            else:
-                                logger.warning(f"登录态文件为空，将不使用登录态")
-                    except (json.JSONDecodeError, ValueError, Exception) as e:
-                        logger.warning(f"登录态文件加载失败: {str(e)}，将不使用登录态")
-                
-                scraper = PlaywrightScraper(headless=True, storage_state_path=valid_storage_state)
                 scraper.start()
                 page_data = scraper.fetch_page(url, wait_for_url_change=True)
-            except Exception as e:
-                logger.error(f"Playwright抓取失败: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                return jsonify({'success': False, 'error': f'抓取失败: {str(e)}'})
             finally:
-                if scraper:
-                    try:
-                        scraper.close()
-                    except Exception as close_error:
-                        logger.warning(f"关闭浏览器时出错: {str(close_error)}")
+                scraper.close()
         elif method == 'selenium':
             scraper = SeleniumScraper(headless=True)
             try:
@@ -1106,11 +939,6 @@ def api_detail(data_id):
         return jsonify({'success': False, 'error': str(e)})
 
 if __name__ == '__main__':
-    import warnings
-    
-    # 忽略urllib3的OpenSSL警告（不影响功能，已知问题）
-    warnings.filterwarnings('ignore', category=UserWarning, module='urllib3')
-    
     print("=" * 60)
     print("🌐 网页抓取工具 Web GUI（优化版）")
     print("=" * 60)
@@ -1118,6 +946,4 @@ if __name__ == '__main__':
     print("💡 智能检测登录需求，自动获取Cookie")
     print("💡 按 Ctrl+C 停止服务器")
     print("=" * 60)
-    
-    # 使用use_reloader=False可以减少资源泄漏警告和避免环境变量问题
-    app.run(debug=True, host='127.0.0.1', port=5000, use_reloader=False)
+    app.run(debug=True, host='127.0.0.1', port=5000)
