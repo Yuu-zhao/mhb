@@ -4,11 +4,15 @@
 
 ## 功能特性
 
+- 🎨 **可视化GUI界面**：简单易用的图形界面，无需命令行
 - 自动抓取网页内容（标题和正文）
 - 将数据存储到SQLite数据库
 - 支持自定义请求头
 - **支持需要登录的页面（Cookie和Selenium两种方式）**
 - **支持JavaScript渲染的页面（Selenium）**
+- 数据预览功能，抓取前可查看内容
+- 查看已保存的数据列表和详情
+- Cookie文件管理（保存/加载）
 - 完善的错误处理和日志记录
 
 ## 安装依赖
@@ -19,7 +23,29 @@ pip install -r requirements.txt
 
 ## 使用方法
 
-### 基本使用（无需登录的页面）
+### 🎨 Web GUI界面（推荐，最简单，跨平台）
+
+启动Web界面：
+```bash
+python web_gui.py
+```
+
+然后在浏览器中访问：`http://127.0.0.1:5000`
+
+界面功能：
+- ✅ 输入URL地址
+- ✅ 设置Cookie（支持从文件加载）
+- ✅ 选择抓取方法（Requests或Selenium）
+- ✅ 实时预览抓取的数据
+- ✅ 一键保存到数据库
+- ✅ 查看已保存的数据列表
+- ✅ 现代化Web界面，无需安装GUI库
+
+**注意**：如果遇到tkinter问题（macOS常见），请使用Web GUI (`web_gui.py`)
+
+### 命令行使用
+
+#### 基本使用（无需登录的页面）
 
 ```bash
 python main.py <URL>
@@ -169,6 +195,8 @@ finally:
 
 ```
 mhb/
+├── web_gui.py           # 🌐 Web GUI界面（推荐使用，跨平台）
+├── gui_app.py           # 🎨 桌面GUI界面（需要tkinter）
 ├── main.py              # 主程序入口（基本抓取）
 ├── main_with_login.py   # 支持登录的主程序
 ├── scraper.py           # 网页抓取模块（支持Cookie）
@@ -178,6 +206,7 @@ mhb/
 ├── login_example.py     # 登录使用示例
 ├── requirements.txt     # 依赖包列表
 ├── README.md            # 说明文档
+├── QUICK_START.md       # 快速开始指南
 └── page_data.db         # SQLite数据库文件（运行后自动生成）
 ```
 
