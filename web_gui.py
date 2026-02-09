@@ -8,9 +8,19 @@ from selenium_scraper import SeleniumScraper
 from playwright_scraper import PlaywrightScraper
 from database import DatabaseManager
 from cookie_helper import CookieHelper
+from data_extractor import DataExtractor
+from login_state_manager import LoginStateManager
+from browser_manager import BrowserManager
+import sys
+from pathlib import Path
+# 添加src目录到路径
+sys.path.insert(0, str(Path(__file__).parent))
+from src.application.services.multi_tab_scraping_service import MultiTabScrapingService
 import logging
 import os
 import json
+import threading
+import time as time_module
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -18,6 +28,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 db_manager = DatabaseManager()
+data_extractor = DataExtractor()
+login_manager = LoginStateManager()  # 中心化登录态管理
+browser_manager = BrowserManager()  # 浏览器管理器（单例）
 
 # 简化的HTML模板
 HTML_TEMPLATE = """
@@ -292,6 +305,7 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="btn-group">
                         <button class="btn-primary" onclick="startWorkflow()">开始抓取</button>
+                        <button class="btn-success" onclick="startMultiTabWorkflow()" style="margin-left: 10px;">多标签页抓取</button>
                     </div>
                 </div>
 
@@ -351,6 +365,10 @@ HTML_TEMPLATE = """
                         <div class="preview-box" id="previewTitle">暂无数据</div>
                     </div>
                     <div class="form-group">
+                        <label>提取的关键信息:</label>
+                        <div class="preview-box" id="previewExtracted" style="max-height: 200px; font-size: 12px; overflow-y: auto;">暂无提取数据</div>
+                    </div>
+                    <div class="form-group">
                         <label>内容:</label>
                         <div class="preview-box" id="previewContent">暂无数据</div>
                     </div>
@@ -376,8 +394,7 @@ HTML_TEMPLATE = """
 
     <script>
         let currentPageData = null;
-        let currentCookie = null;
-        let currentStorageState = null;
+        // 不再在前端持久化Cookie和storage_state，由后端LoginStateManager统一管理
 
         function showStatus(message, type) {
             const statusDiv = document.getElementById('status');
@@ -391,6 +408,91 @@ HTML_TEMPLATE = """
 
         function updateLoading(text) {
             document.getElementById('loadingText').textContent = text;
+        }
+
+        // 多标签页抓取工作流程
+        async function startMultiTabWorkflow() {
+            const url = document.getElementById('url').value.trim();
+            if (!url || url === 'https://') {
+                showStatus('请输入有效的URL', 'error');
+                return;
+            }
+
+            if (!url.startsWith('http://') && !url.startsWith('https://')) {
+                showStatus('URL必须以http://或https://开头', 'error');
+                return;
+            }
+
+            const method = document.getElementById('method').value;
+            
+            if (method !== 'playwright') {
+                showStatus('多标签页抓取仅支持Playwright方法，请先切换抓取方法', 'error');
+                return;
+            }
+            
+            document.getElementById('loading').style.display = 'block';
+            updateLoading('正在抓取所有标签页（人物/修炼、技能、道具/法宝）...');
+            document.querySelector('.btn-primary').disabled = true;
+            document.querySelector('.btn-success').disabled = true;
+            document.getElementById('saveBtn').disabled = true;
+
+            try {
+                const fetchResult = await fetch('/api/fetch_all_tabs', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        url: url,
+                        method: method
+                    })
+                }).then(r => r.json());
+
+                document.getElementById('loading').style.display = 'none';
+                document.querySelector('.btn-primary').disabled = false;
+                document.querySelector('.btn-success').disabled = false;
+
+                if (!fetchResult.success) {
+                    showStatus('抓取失败: ' + (fetchResult.error || '未知错误'), 'error');
+                    return;
+                }
+
+                if (fetchResult.success) {
+                    currentPageData = fetchResult.data;
+                    let title = fetchResult.data.title || '无标题';
+                    document.getElementById('previewTitle').textContent = title;
+                    
+                    // 显示多标签页提取的关键信息
+                    if (fetchResult.data.extracted_data) {
+                        displayExtractedData(fetchResult.data.extracted_data);
+                        currentPageData.extracted_data = fetchResult.data.extracted_data;
+                        
+                        // 统计提取的字段数
+                        let totalFields = 0;
+                        if (fetchResult.data.extracted_data.basic_info) {
+                            totalFields += Object.keys(fetchResult.data.extracted_data.basic_info).filter(k => fetchResult.data.extracted_data.basic_info[k]).length;
+                        }
+                        if (fetchResult.data.extracted_data.skill_info) {
+                            totalFields += Object.keys(fetchResult.data.extracted_data.skill_info).filter(k => fetchResult.data.extracted_data.skill_info[k]).length;
+                        }
+                        if (fetchResult.data.extracted_data.equip_info) {
+                            totalFields += Object.keys(fetchResult.data.extracted_data.equip_info).filter(k => fetchResult.data.extracted_data.equip_info[k]).length;
+                        }
+                        
+                        showStatus(`✅ 多标签页抓取成功！标题: ${title}, 共提取了 ${totalFields} 个关键字段`, 'success');
+                    } else {
+                        showStatus(`抓取成功！标题: ${title}`, 'success');
+                    }
+                    
+                    // 内容预览
+                    document.getElementById('previewContent').textContent = '已提取所有标签页的关键信息，完整内容未保存（节省空间）';
+                    
+                    document.getElementById('saveBtn').disabled = false;
+                }
+            } catch (error) {
+                document.getElementById('loading').style.display = 'none';
+                document.querySelector('.btn-primary').disabled = false;
+                document.querySelector('.btn-success').disabled = false;
+                showStatus('处理失败: ' + error.message, 'error');
+            }
         }
 
         // 主工作流程：智能抓取
@@ -413,40 +515,35 @@ HTML_TEMPLATE = """
             document.getElementById('saveBtn').disabled = true;
 
             try {
-                // Step 1: 检测是否需要登录
-                updateLoading('正在检测登录需求...');
-                const checkResult = await fetch('/api/check_login', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({url: url})
-                }).then(r => r.json());
-
-                // Step 2: 如果需要登录且没有Cookie，自动获取
-                if (checkResult.need_login && !currentCookie && !currentStorageState) {
-                    updateLoading('检测到需要登录，正在自动获取Cookie...');
-                    showStatus('检测到需要登录，正在自动获取Cookie...', 'warning');
-                    
-                    const cookieResult = await autoGetCookieInternal(url);
-                    if (!cookieResult.success) {
-                        showStatus('自动获取Cookie失败: ' + cookieResult.error, 'error');
-                        document.getElementById('loading').style.display = 'none';
-                        document.querySelector('.btn-primary').disabled = false;
-                        return;
-                    }
-                }
-
-                // Step 3: 开始抓取
+                // Step 1: 直接抓取（使用已有登录态，如果有的话）
                 updateLoading('正在抓取页面...');
-                const fetchResult = await fetch('/api/fetch', {
+                let fetchResult = await fetch('/api/fetch_and_extract', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         url: url,
-                        cookie: currentCookie,
-                        method: method,
-                        storage_state_path: currentStorageState
+                        method: method
+                        // 不再传递cookie和storage_state_path，由后端LoginStateManager统一管理
                     })
                 }).then(r => r.json());
+
+                // Step 2: 如果抓取失败且提示需要登录，提示用户先获取cookie
+                console.log('检查登录需求，fetchResult:', fetchResult);
+                if (!fetchResult.success && (fetchResult.need_login || (fetchResult.error && (fetchResult.error.includes('登录') || fetchResult.error.includes('login'))))) {
+                    console.log('检测到需要登录');
+                    document.getElementById('loading').style.display = 'none';
+                    document.querySelector('.btn-primary').disabled = false;
+                    showStatus('页面需要登录，请先点击"自动获取Cookie"按钮获取最新登录态，然后再进行抓取', 'warning');
+                    return;
+                }
+
+                // 如果仍然失败，显示错误
+                if (!fetchResult.success) {
+                    document.getElementById('loading').style.display = 'none';
+                    document.querySelector('.btn-primary').disabled = false;
+                    showStatus('抓取失败: ' + (fetchResult.error || '未知错误'), 'error');
+                    return;
+                }
 
                 document.getElementById('loading').style.display = 'none';
                 document.querySelector('.btn-primary').disabled = false;
@@ -459,13 +556,29 @@ HTML_TEMPLATE = """
                         urlInfo = ` (已跳转: ${fetchResult.data.original_url} -> ${fetchResult.data.url})`;
                     }
                     document.getElementById('previewTitle').textContent = title;
-                    let content = fetchResult.data.content || '无内容';
-                    if (content.length > 50000) {
-                        content = content.substring(0, 50000) + '\\n\\n... (内容过长，已截断)';
+                    
+                    // 直接显示提取的关键信息
+                    if (fetchResult.data.extracted_data) {
+                        displayExtractedData(fetchResult.data.extracted_data);
+                        currentPageData.extracted_data = fetchResult.data.extracted_data;
+                        const extractedCount = Object.keys(fetchResult.data.extracted_data).filter(k => fetchResult.data.extracted_data[k]).length;
+                        showStatus(`抓取成功！标题: ${title}, 提取了 ${extractedCount} 个关键字段${urlInfo}`, 'success');
+                    } else {
+                        showStatus(`抓取成功！标题: ${title}${urlInfo}`, 'success');
                     }
-                    document.getElementById('previewContent').textContent = content;
+                    
+                    // 内容预览（可选，显示部分内容）
+                    if (fetchResult.data.content) {
+                        let content = fetchResult.data.content;
+                        if (content.length > 10000) {
+                            content = content.substring(0, 10000) + '\\n\\n... (内容过长，已截断，仅显示提取的关键信息)';
+                        }
+                        document.getElementById('previewContent').textContent = content;
+                    } else {
+                        document.getElementById('previewContent').textContent = '已提取关键信息，完整内容未保存';
+                    }
+                    
                     document.getElementById('saveBtn').disabled = false;
-                    showStatus(`抓取成功！标题: ${title}, 内容长度: ${fetchResult.data.content?.length || 0} 字符${urlInfo}`, 'success');
                 } else {
                     showStatus('抓取失败: ' + fetchResult.error, 'error');
                 }
@@ -476,30 +589,36 @@ HTML_TEMPLATE = """
             }
         }
 
-        // 自动获取Cookie（内部函数）
+        // 自动获取Cookie（内部函数）- 简化版，不再管理状态
         async function autoGetCookieInternal(url) {
             try {
+                console.log('开始调用 autoGetCookieInternal，URL:', url);
                 updateLoading('正在启动浏览器获取Cookie...');
-                const result = await fetch('/api/auto_get_cookie', {
+                showStatus('正在启动浏览器，请在弹出的窗口中完成登录...', 'info');
+                
+                const response = await fetch('/api/auto_get_cookie', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({url: url})
-                }).then(r => r.json());
+                });
+                
+                console.log('收到响应，状态:', response.status);
+                const result = await response.json();
+                console.log('解析结果:', result);
 
                 if (result.success) {
-                    if (result.cookie) {
-                        currentCookie = result.cookie;
-                        updateCookieStatus(true, 'Cookie');
-                    }
-                    if (result.storage_state) {
-                        currentStorageState = result.storage_state;
-                        updateCookieStatus(true, '登录态');
-                    }
-                    return {success: true};
+                    // 登录态已由后端LoginStateManager保存，前端只需确认成功
+                    updateCookieStatus(true, '登录态');
+                    return {
+                        success: true,
+                        storage_state: result.storage_state  // 仅用于返回，不持久化
+                    };
                 } else {
+                    console.error('登录失败:', result.error);
                     return {success: false, error: result.error};
                 }
             } catch (error) {
+                console.error('登录过程出错:', error);
                 return {success: false, error: error.message};
             }
         }
@@ -547,12 +666,21 @@ HTML_TEMPLATE = """
             fetch('/api/save', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(currentPageData)
+                body: JSON.stringify({
+                    url: currentPageData.url,
+                    title: currentPageData.title,
+                    content: currentPageData.content,
+                    extracted_data: currentPageData.extracted_data
+                })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    showStatus(`数据已保存到数据库！ID: ${data.id}, 标题: ${data.title}`, 'success');
+                    let msg = `数据已保存到数据库！ID: ${data.id}, 标题: ${data.title}`;
+                    if (data.extracted_fields > 0) {
+                        msg += `, 提取了 ${data.extracted_fields} 个字段`;
+                    }
+                    showStatus(msg, 'success');
                 } else {
                     showStatus('保存失败: ' + data.error, 'error');
                 }
@@ -606,7 +734,21 @@ HTML_TEMPLATE = """
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    alert(`详情:\\n\\nURL: ${data.data.url}\\n\\n标题: ${data.data.title || '无标题'}\\n\\n内容: ${data.data.content ? data.data.content.substring(0, 500) + '...' : '无内容'}`);
+                    let detailText = `详情:\\n\\nURL: ${data.data.url}\\n\\n标题: ${data.data.title || '无标题'}\\n\\n`;
+                    
+                    // 显示提取的关键信息
+                    if (data.data.extracted_data && Object.keys(data.data.extracted_data).length > 0) {
+                        detailText += '提取的关键信息:\\n';
+                        for (const [key, value] of Object.entries(data.data.extracted_data)) {
+                            if (value) {
+                                detailText += `${key}: ${value}\\n`;
+                            }
+                        }
+                        detailText += '\\n';
+                    }
+                    
+                    detailText += `内容: ${data.data.content ? data.data.content.substring(0, 500) + '...' : '无内容'}`;
+                    alert(detailText);
                 } else {
                     showStatus('获取详情失败: ' + data.error, 'error');
                 }
@@ -620,8 +762,154 @@ HTML_TEMPLATE = """
             document.getElementById('dataModal').style.display = 'none';
         }
 
+        function displayExtractedData(extractedData) {
+            const extractedDiv = document.getElementById('previewExtracted');
+            if (!extractedData || Object.keys(extractedData).length === 0) {
+                extractedDiv.textContent = '暂无提取数据';
+                return;
+            }
+            
+            // 检查是否是多标签页数据
+            if (extractedData.basic_info || extractedData.skill_info || extractedData.equip_info) {
+                displayMultiTabData(extractedData);
+                return;
+            }
+            
+            // 单标签页数据展示
+            let html = '<div class="extracted-data-container">';
+            html += '<table style="width: 100%; font-size: 12px; border-collapse: collapse; margin-bottom: 10px;">';
+            for (const [key, value] of Object.entries(extractedData)) {
+                if (value) {
+                    html += `<tr><td style="font-weight: bold; padding: 4px 8px; color: #667eea; width: 40%; background: #f5f5f5;">${key}:</td><td style="padding: 4px 8px; background: #fff;">${value}</td></tr>`;
+                }
+            }
+            html += '</table></div>';
+            extractedDiv.innerHTML = html;
+        }
+
+        function displayMultiTabData(data) {
+            const extractedDiv = document.getElementById('previewExtracted');
+            let html = '<div class="multi-tab-data-container">';
+            
+            // 基础信息（人物/修炼）
+            if (data.basic_info && Object.keys(data.basic_info).length > 0) {
+                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">📊 人物/修炼</h3>';
+                html += '<table style="width: 100%; font-size: 12px; border-collapse: collapse; margin-bottom: 15px;">';
+                for (const [key, value] of Object.entries(data.basic_info)) {
+                    if (value) {
+                        html += `<tr><td style="font-weight: bold; padding: 4px 8px; color: #667eea; width: 40%; background: #f5f5f5;">${key}:</td><td style="padding: 4px 8px; background: #fff;">${value}</td></tr>`;
+                    }
+                }
+                html += '</table></div>';
+            }
+            
+            // 技能信息
+            if (data.skill_info && Object.keys(data.skill_info).length > 0) {
+                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">⚔️ 技能</h3>';
+                
+                // 师门技能
+                if (data.skill_info.school_skills && data.skill_info.school_skills.length > 0) {
+                    html += '<div style="margin-bottom: 10px;"><strong>师门技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                    data.skill_info.school_skills.forEach(skill => {
+                        html += `<li>${skill.name} (${skill.level}级)</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 生活技能
+                if (data.skill_info.life_skills && data.skill_info.life_skills.length > 0) {
+                    html += '<div style="margin-bottom: 10px;"><strong>生活技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                    data.skill_info.life_skills.forEach(skill => {
+                        html += `<li>${skill.name} (${skill.level}级)</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 剧情技能
+                if (data.skill_info.juqing_skills && data.skill_info.juqing_skills.length > 0) {
+                    html += '<div style="margin-bottom: 10px;"><strong>剧情技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                    data.skill_info.juqing_skills.forEach(skill => {
+                        html += `<li>${skill.name} (${skill.level}级)</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 熟练度
+                if (data.skill_info.proficiency && Object.keys(data.skill_info.proficiency).length > 0) {
+                    html += '<div style="margin-bottom: 10px;"><strong>熟练度:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                    for (const [key, value] of Object.entries(data.skill_info.proficiency)) {
+                        html += `<li>${key}: ${value}</li>`;
+                    }
+                    html += '</ul></div>';
+                }
+                
+                html += '</div>';
+            }
+            
+            // 道具/法宝信息
+            if (data.equip_info && Object.keys(data.equip_info).length > 0) {
+                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">🎒 道具/法宝</h3>';
+                
+                // 装备数量
+                if (data.equip_info.equipments && data.equip_info.equipments.length > 0) {
+                    html += `<div style="margin-bottom: 10px;"><strong>装备 (${data.equip_info.equipments.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
+                    data.equip_info.equipments.forEach(equip => {
+                        html += `<li>${equip.name}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 神器
+                if (data.equip_info.shenqi && data.equip_info.shenqi.length > 0) {
+                    html += `<div style="margin-bottom: 10px;"><strong>神器 (${data.equip_info.shenqi.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
+                    data.equip_info.shenqi.forEach(item => {
+                        html += `<li>${item.name}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 已装备灵宝
+                if (data.equip_info.lingbao_equipped && data.equip_info.lingbao_equipped.length > 0) {
+                    html += `<div style="margin-bottom: 10px;"><strong>已装备灵宝 (${data.equip_info.lingbao_equipped.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
+                    data.equip_info.lingbao_equipped.forEach(item => {
+                        html += `<li>${item.name}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 已装备法宝
+                if (data.equip_info.fabao_equipped && data.equip_info.fabao_equipped.length > 0) {
+                    html += `<div style="margin-bottom: 10px;"><strong>已装备法宝 (${data.equip_info.fabao_equipped.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
+                    data.equip_info.fabao_equipped.forEach(item => {
+                        html += `<li>${item.name}</li>`;
+                    });
+                    html += '</ul></div>';
+                }
+                
+                // 货币信息
+                if (data.equip_info.currency && Object.keys(data.equip_info.currency).length > 0) {
+                    html += '<div style="margin-bottom: 10px;"><strong>货币:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
+                    for (const [key, value] of Object.entries(data.equip_info.currency)) {
+                        html += `<li>${key}: ${value}</li>`;
+                    }
+                    html += '</ul></div>';
+                }
+                
+                // 行囊扩展
+                if (data.equip_info.bag_expansion) {
+                    html += `<div style="margin-bottom: 10px;"><strong>行囊扩展:</strong> ${data.equip_info.bag_expansion}</div>`;
+                }
+                
+                html += '</div>';
+            }
+            
+            html += '</div>';
+            extractedDiv.innerHTML = html;
+        }
+
         function clearPreview() {
             document.getElementById('previewTitle').textContent = '暂无数据';
+            document.getElementById('previewExtracted').textContent = '暂无提取数据';
             document.getElementById('previewContent').textContent = '暂无数据';
             currentPageData = null;
             document.getElementById('saveBtn').disabled = true;
@@ -855,7 +1143,7 @@ def check_playwright_installed():
 
 @app.route('/api/auto_get_cookie', methods=['POST'])
 def api_auto_get_cookie():
-    """自动获取Cookie（使用Playwright）"""
+    """自动获取Cookie（使用LoginStateManager）"""
     try:
         data = request.json
         url = data.get('url')
@@ -874,91 +1162,458 @@ def api_auto_get_cookie():
             )
             return jsonify({'success': False, 'error': error_msg})
         
-        # 提取域名
-        from urllib.parse import urlparse
-        parsed = urlparse(url)
-        domain = parsed.netloc
+        # 使用LoginStateManager进行登录（强制刷新，因为这是用户主动触发的获取Cookie操作）
+        domain = login_manager.get_domain_from_url(url)
+        logger.info(f"用户主动触发获取Cookie，强制刷新登录态: {domain}")
+        storage_state_path = login_manager.refresh_state(domain, url)
         
-        # 生成登录态文件名
-        storage_state_path = f"login_state_{domain.replace('.', '_')}.json"
-        
-        # 使用Playwright自动登录
-        scraper = PlaywrightScraper(headless=False)  # 显示浏览器，让用户登录
+        # 从保存的登录态文件中读取Cookie（避免再次启动浏览器）
+        cookie_string = None
         try:
-            scraper.start()
-            
-            # 访问登录页面
-            login_url = f"{parsed.scheme}://{domain}"
-            logger.info(f"正在访问登录页面: {login_url}")
-            scraper.page.goto(login_url, wait_until='networkidle', timeout=30000)
-            
-            # 智能等待用户登录
-            logger.info("请在浏览器中完成登录...")
-            logger.info("系统会检测登录状态，登录完成后会自动保存")
-            
-            # 等待登录完成的智能检测
-            import time
-            max_wait = 300  # 最多等待5分钟
-            check_interval = 2  # 每2秒检查一次
-            initial_url = scraper.page.url
-            initial_cookies_count = len(scraper.get_cookies())
-            
-            for i in range(int(max_wait / check_interval)):
-                time.sleep(check_interval)
-                
-                current_url = scraper.page.url
-                current_cookies = scraper.get_cookies()
-                current_cookies_count = len(current_cookies)
-                
-                # 检测登录完成的标志：
-                # 1. URL发生变化（可能跳转到登录后的页面）
-                # 2. Cookie数量增加（登录后通常会有新的Cookie）
-                # 3. 页面内容变化（检测登录相关的关键词消失）
-                
-                url_changed = current_url != initial_url
-                cookies_increased = current_cookies_count > initial_cookies_count
-                
-                # 检查是否有登录相关的Cookie（如session、token等）
-                has_auth_cookies = any(
-                    'session' in c['name'].lower() or 
-                    'token' in c['name'].lower() or 
-                    'auth' in c['name'].lower() or
-                    'login' in c['name'].lower()
-                    for c in current_cookies
-                )
-                
-                if (url_changed or cookies_increased or has_auth_cookies) and i > 5:
-                    # 再等待几秒确保登录完成
-                    time.sleep(3)
-                    logger.info("检测到登录完成，正在保存登录态...")
-                    break
-                
-                if i % 10 == 0:  # 每20秒提示一次
-                    logger.info(f"等待登录中... ({i * check_interval}秒)")
-            
-            # 保存登录态
-            scraper.context.storage_state(path=storage_state_path)
-            logger.info(f"✅ 登录态已保存: {storage_state_path}")
-            
-            # 获取Cookie
-            cookies = scraper.get_cookies()
-            cookie_dict = {c['name']: c['value'] for c in cookies}
-            cookie_string = CookieHelper.cookie_dict_to_string(cookie_dict)
-            
-            return jsonify({
-                'success': True,
-                'cookie': cookie_string,
-                'storage_state': storage_state_path,
-                'message': 'Cookie获取成功'
-            })
-            
-        finally:
-            scraper.close()
+            import json
+            if storage_state_path and os.path.exists(storage_state_path):
+                with open(storage_state_path, 'r', encoding='utf-8') as f:
+                    storage_data = json.load(f)
+                    if 'cookies' in storage_data:
+                        cookie_dict = {c['name']: c['value'] for c in storage_data['cookies']}
+                        cookie_string = CookieHelper.cookie_dict_to_string(cookie_dict)
+                        logger.info(f"从登录态文件中提取了 {len(cookie_dict)} 个Cookie")
+        except Exception as e:
+            logger.warning(f"从登录态文件读取Cookie失败: {str(e)}")
+            cookie_string = None
+        
+        return jsonify({
+            'success': True,
+            'cookie': cookie_string,
+            'storage_state': storage_state_path,
+            'message': 'Cookie获取成功，已保存到本地文件'
+        })
             
     except Exception as e:
         logger.error(f"自动获取Cookie失败: {str(e)}")
         import traceback
         traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/check_local_cookie', methods=['POST'])
+def api_check_local_cookie():
+    """检查本地Cookie文件"""
+    try:
+        data = request.json
+        url = data.get('url', '')
+        
+        if not url:
+            return jsonify({'success': False, 'error': 'URL不能为空'})
+        
+        # 从URL中提取域名
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        domain = parsed.netloc.replace('www.', '')
+        
+        # 查找对应的登录态文件
+        storage_state_path = f"login_state_{domain.replace('.', '_')}.json"
+        
+        if os.path.exists(storage_state_path):
+            # 验证文件是否有效
+            try:
+                import json
+                with open(storage_state_path, 'r', encoding='utf-8') as f:
+                    content = f.read().strip()
+                    if content:
+                        storage_data = json.loads(content)
+                        if isinstance(storage_data, dict) and ('cookies' in storage_data or 'origins' in storage_data):
+                            logger.info(f"找到有效的本地Cookie文件: {storage_state_path}")
+                            return jsonify({
+                                'success': True,
+                                'storage_state_path': storage_state_path,
+                                'message': '找到本地Cookie文件'
+                            })
+            except Exception as e:
+                logger.warning(f"Cookie文件无效: {str(e)}")
+        
+        return jsonify({
+            'success': False,
+            'storage_state_path': None,
+            'message': '未找到有效的本地Cookie文件'
+        })
+    except Exception as e:
+        logger.error(f"检查本地Cookie失败: {str(e)}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/fetch_and_extract', methods=['POST'])
+def api_fetch_and_extract():
+    """抓取页面并直接提取关键信息（重构版：使用LoginStateManager）"""
+    try:
+        data = request.json
+        url = data.get('url')
+        method = data.get('method', 'playwright')
+
+        if not url:
+            return jsonify({'success': False, 'error': 'URL不能为空'})
+
+        # 提取域名
+        domain = login_manager.get_domain_from_url(url)
+        logger.info(f"处理URL: {url}, 域名: {domain}")
+
+        # 获取登录态（如果存在）
+        storage_state_path = None
+        if method == 'playwright':
+            # 只使用已有的登录态，不自动创建
+            if login_manager.has_valid_state(domain):
+                storage_state_path = login_manager.get_state(domain)
+                logger.info(f"使用已有登录态: {storage_state_path}")
+            else:
+                logger.info(f"未找到登录态文件，将尝试无登录态抓取")
+                storage_state_path = None
+
+        page_data = None
+        extracted_data = None
+        need_login = False
+
+        if method == 'playwright':
+            # 检查Playwright是否已安装
+            if not check_playwright_installed():
+                return jsonify({
+                    'success': False, 
+                    'error': 'Playwright浏览器未安装，请运行 "playwright install" 安装浏览器，或选择其他抓取方法'
+                })
+            
+            try:
+                # 使用BrowserManager获取页面实例（复用浏览器，不关闭）
+                page = browser_manager.get_page(storage_state_path=storage_state_path, headless=True)
+                
+                # 直接使用page对象抓取页面
+                from bs4 import BeautifulSoup
+                
+                original_url = url
+                logger.info(f"正在抓取页面: {url}")
+                
+                # 访问页面
+                page.goto(url, wait_until='networkidle', timeout=30000)
+                
+                # 等待URL稳定
+                max_wait = 10
+                check_interval = 0.5
+                last_url = page.url
+                stable_count = 0
+                required_stable = 2
+                
+                for _ in range(int(max_wait / check_interval)):
+                    time_module.sleep(check_interval)
+                    current_url = page.url
+                    if current_url != last_url:
+                        logger.info(f"检测到URL变化: {last_url} -> {current_url}")
+                        stable_count = 0
+                        last_url = current_url
+                    else:
+                        stable_count += 1
+                        if stable_count >= required_stable:
+                            logger.info(f"URL已稳定: {current_url}")
+                            break
+                
+                # 等待页面完全加载
+                try:
+                    page.wait_for_load_state('networkidle', timeout=30000)
+                except:
+                    logger.warning("等待网络空闲超时，继续处理")
+                
+                # 额外等待，确保JavaScript执行完成
+                time_module.sleep(1)
+                
+                # 获取最终URL
+                final_url = page.url
+                if final_url != original_url:
+                    logger.info(f"页面发生跳转: {original_url} -> {final_url}")
+                
+                # 获取页面内容（完整HTML）
+                page_content = page.content()
+                
+                # 解析HTML
+                soup = BeautifulSoup(page_content, 'lxml')
+                
+                # 提取标题
+                title_tag = soup.find('title')
+                title = title_tag.get_text(strip=True) if title_tag else "无标题"
+                
+                # 对于藏宝阁页面，返回完整HTML
+                if 'cbg.163.com' in url or 'xyq.cbg.163.com' in url:
+                    content = page_content
+                else:
+                    # 其他页面提取文本内容
+                    for script in soup(["script", "style"]):
+                        script.decompose()
+                    body = soup.find('body')
+                    content = body.get_text(separator='\n', strip=True) if body else ""
+                
+                page_data = {
+                    'url': final_url,
+                    'original_url': original_url,
+                    'title': title,
+                    'content': content,
+                    'redirected': final_url != original_url
+                }
+                
+                logger.info(f"成功抓取页面: {final_url}, 标题: {title}")
+                
+                # 检查是否需要登录（通过URL判断）
+                if page_data:
+                    page_url = page_data.get('url', '')
+                    # 检查URL是否包含登录相关路径
+                    if 'show_login' in page_url or 'login' in page_url.lower():
+                        need_login = True
+                        logger.info(f"检测到页面需要登录（通过URL判断）: {page_url}")
+                        # 如果使用了登录态但仍然需要登录，说明登录态已过期，需要删除过期文件
+                        if storage_state_path:
+                            logger.warning(f"登录态已过期，删除过期文件: {storage_state_path}")
+                            try:
+                                if os.path.exists(storage_state_path):
+                                    os.remove(storage_state_path)
+                                    logger.info(f"✅ 已删除过期登录态文件: {storage_state_path}")
+                                    # 清理对应的浏览器实例
+                                    browser_manager._cleanup_key(storage_state_path)
+                            except Exception as e:
+                                logger.warning(f"删除过期登录态文件失败: {str(e)}")
+                    elif page_data.get('content'):
+                        # 直接提取关键信息
+                        extracted_data = data_extractor.extract_all_info(page_data['content'], url)
+                        extracted_count = len([v for v in extracted_data.values() if v])
+                        logger.info(f"提取了 {extracted_count} 个字段")
+                        
+                        # 如果提取失败，保存HTML用于调试
+                        if extracted_count == 0:
+                            try:
+                                debug_file = 'debug_extract_failed.html'
+                                with open(debug_file, 'w', encoding='utf-8') as f:
+                                    f.write(page_data['content'])
+                                logger.warning(f"提取失败，已保存页面内容到 {debug_file} 用于调试")
+                                
+                                # 检查HTML中是否包含关键元素
+                                from bs4 import BeautifulSoup
+                                soup = BeautifulSoup(page_data['content'], 'lxml')
+                                goods_info = None
+                                for div in soup.find_all('div', class_=True):
+                                    classes = div.get('class', [])
+                                    if isinstance(classes, str):
+                                        classes = [classes]
+                                    if 'infoList' in classes and 'goodsInfo' in classes:
+                                        goods_info = div
+                                        break
+                                
+                                if not goods_info:
+                                    logger.warning("HTML中未找到 infoList goodsInfo，可能是页面结构不同或需要等待JavaScript加载")
+                                    # 检查是否有类似的元素
+                                    all_divs = soup.find_all('div', class_=True)
+                                    infoList_divs = [d for d in all_divs if 'infoList' in str(d.get('class', []))]
+                                    goodsInfo_divs = [d for d in all_divs if 'goodsInfo' in str(d.get('class', []))]
+                                    logger.info(f"找到 {len(infoList_divs)} 个包含'infoList'的div, {len(goodsInfo_divs)} 个包含'goodsInfo'的div")
+                            except Exception as e:
+                                logger.warning(f"保存调试文件失败: {str(e)}")
+                    else:
+                        need_login = True
+                        logger.info("页面内容为空，可能需要登录")
+                
+            except Exception as e:
+                error_msg = str(e)
+                logger.error(f"Playwright抓取失败: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                
+                # 检查是否是严重错误（如UnboundLocalError、AttributeError等），需要停止服务
+                if isinstance(e, (UnboundLocalError, NameError, AttributeError, ImportError)):
+                    logger.critical(f"检测到严重错误: {type(e).__name__}: {str(e)}")
+                    logger.critical("程序将停止运行，请检查代码错误")
+                    # 清理资源
+                    try:
+                        browser_manager.close_all()
+                    except:
+                        pass
+                    # 停止Flask服务器
+                    import sys
+                    import os
+                    os._exit(1)  # 强制退出
+                
+                # 检查是否是登录相关错误
+                if '登录' in error_msg or 'login' in error_msg.lower() or 'redirect' in error_msg.lower():
+                    need_login = True
+                else:
+                    return jsonify({'success': False, 'error': f'抓取失败: {str(e)}', 'need_login': need_login})
+            # 注意：不再关闭浏览器，保持浏览器实例运行以便复用
+        elif method == 'selenium':
+            scraper = SeleniumScraper(headless=True)
+            try:
+                if cookie:
+                    cookies_dict = CookieHelper.parse_cookie_string(cookie)
+                    selenium_cookies = CookieHelper.dict_to_selenium_cookies(
+                        cookies_dict,
+                        domain=".163.com" if "163.com" in url else ""
+                    )
+                    scraper.driver.get(url.split('/')[0] + '//' + url.split('/')[2])
+                    scraper.set_cookies(selenium_cookies)
+                
+                page_data = scraper.fetch_page(url, wait_for_url_change=True, wait_timeout=15)
+                
+                # 直接提取关键信息
+                if page_data and page_data.get('content'):
+                    extracted_data = data_extractor.extract_all_info(page_data['content'], url)
+                    logger.info(f"提取了 {len([v for v in extracted_data.values() if v])} 个字段")
+            finally:
+                try:
+                    scraper.close()
+                    time_module.sleep(0.2)
+                except Exception as e:
+                    logger.warning(f"关闭浏览器时出错: {str(e)}")
+        else:
+            scraper = WebScraper(use_session=True)
+            if cookie:
+                scraper.set_cookies(cookie)
+            page_data = scraper.fetch_page(url, allow_redirects=True)
+            
+            # 直接提取关键信息
+            if page_data and page_data.get('content'):
+                extracted_data = data_extractor.extract_all_info(page_data['content'], url)
+                logger.info(f"提取了 {len([v for v in extracted_data.values() if v])} 个字段")
+
+        if page_data is None:
+            return jsonify({
+                'success': False, 
+                'error': '抓取失败，未获取到页面数据',
+                'need_login': need_login
+            })
+
+        # 如果需要登录，返回提示（提示用户先获取cookie）
+        if need_login:
+            return jsonify({
+                'success': False,
+                'error': '页面需要登录，请先点击"自动获取Cookie"按钮获取最新登录态，然后再进行抓取',
+                'need_login': True,
+                'original_url': url  # 保存原始URL，登录后可以重定向回来
+            })
+
+        # 返回提取的数据，不返回完整HTML内容（节省空间）
+        return jsonify({
+            'success': True,
+            'data': {
+                'url': page_data.get('url', url),
+                'title': page_data.get('title', '无标题'),
+                'content': page_data.get('content', '')[:5000] if page_data.get('content') else '',  # 只返回前5000字符作为预览
+                'extracted_data': extracted_data,
+                'redirected': page_data.get('redirected', False),
+                'original_url': page_data.get('original_url', url)
+            }
+        })
+    except Exception as e:
+        logger.error(f"抓取失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/fetch_all_tabs', methods=['POST'])
+def api_fetch_all_tabs():
+    """多标签页抓取：依次抓取人物/修炼、技能、道具/法宝"""
+    try:
+        data = request.json
+        url = data.get('url')
+        method = data.get('method', 'playwright')
+
+        if not url:
+            return jsonify({'success': False, 'error': 'URL不能为空'})
+
+        # 只支持Playwright（需要页面交互）
+        if method != 'playwright':
+            return jsonify({
+                'success': False,
+                'error': '多标签页抓取仅支持Playwright方法'
+            })
+
+        # 检查Playwright是否已安装
+        if not check_playwright_installed():
+            return jsonify({
+                'success': False,
+                'error': 'Playwright浏览器未安装，请运行 "playwright install" 安装浏览器'
+            })
+
+        # 提取域名
+        domain = login_manager.get_domain_from_url(url)
+        logger.info(f"开始多标签页抓取: {url}, 域名: {domain}")
+
+        # 获取登录态
+        storage_state_path = None
+        if login_manager.has_valid_state(domain):
+            storage_state_path = login_manager.get_state(domain)
+            logger.info(f"使用已有登录态: {storage_state_path}")
+
+        try:
+            # 使用BrowserManager获取页面实例
+            page = browser_manager.get_page(storage_state_path=storage_state_path, headless=True)
+            
+            # 创建PlaywrightScraper包装器（使用已有的page）
+            class PageWrapper:
+                def __init__(self, page):
+                    self.page = page
+                    self.headless = True
+                    self.storage_state_path = storage_state_path
+                
+                def fetch_page(self, url, **kwargs):
+                    """使用已有page抓取"""
+                    from bs4 import BeautifulSoup
+                    self.page.goto(url, wait_until='networkidle', timeout=30000)
+                    time_module.sleep(1)
+                    content = self.page.content()
+                    soup = BeautifulSoup(content, 'lxml')
+                    title = soup.find('title')
+                    return {
+                        'url': self.page.url,
+                        'title': title.get_text(strip=True) if title else '无标题',
+                        'content': content
+                    }
+            
+            wrapper = PageWrapper(page)
+            
+            # 创建多标签页抓取服务（需要先初始化，检查page属性）
+            try:
+                multi_tab_service = MultiTabScrapingService(wrapper)
+            except ValueError as e:
+                logger.error(f"创建多标签页抓取服务失败: {str(e)}")
+                return jsonify({
+                    'success': False,
+                    'error': f'创建抓取服务失败: {str(e)}'
+                })
+            
+            # 执行多标签页抓取
+            page_data = multi_tab_service.scrape_all_tabs(url)
+            
+            if not page_data:
+                return jsonify({
+                    'success': False,
+                    'error': '多标签页抓取失败'
+                })
+            
+            # 返回结果
+            return jsonify({
+                'success': True,
+                'data': {
+                    'url': page_data.url,
+                    'title': page_data.title,
+                    'extracted_data': page_data.extracted_data,
+                    'tabs': {
+                        'basic': '人物/修炼',
+                        'skill': '技能',
+                        'equip': '道具/法宝'
+                    }
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"多标签页抓取失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return jsonify({
+                'success': False,
+                'error': f'抓取失败: {str(e)}'
+            })
+            
+    except Exception as e:
+        logger.error(f"多标签页抓取异常: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/fetch', methods=['POST'])
@@ -967,9 +1622,9 @@ def api_fetch():
     try:
         data = request.json
         url = data.get('url')
-        cookie = data.get('cookie', '').strip()
+        cookie = (data.get('cookie') or '').strip() if data.get('cookie') else ''
         method = data.get('method', 'playwright')
-        storage_state_path = data.get('storage_state_path', '').strip()
+        storage_state_path = (data.get('storage_state_path') or '').strip() if data.get('storage_state_path') else ''
 
         if not url:
             return jsonify({'success': False, 'error': 'URL不能为空'})
@@ -1013,9 +1668,17 @@ def api_fetch():
             finally:
                 if scraper:
                     try:
+                        # 使用更安全的方式关闭，避免段错误
                         scraper.close()
+                        time_module.sleep(0.2)  # 延迟确保资源释放
+                    except Exception as e:
+                        logger.warning(f"关闭浏览器时出错: {str(e)}")
+                        # 继续运行，不影响程序
+                        # 短暂延迟，确保资源完全释放
+                        time_module.sleep(0.2)
                     except Exception as close_error:
                         logger.warning(f"关闭浏览器时出错: {str(close_error)}")
+                        # 即使出错也继续，不影响程序运行
         elif method == 'selenium':
             scraper = SeleniumScraper(headless=True)
             try:
@@ -1030,7 +1693,12 @@ def api_fetch():
                 
                 page_data = scraper.fetch_page(url, wait_for_url_change=True, wait_timeout=15)
             finally:
-                scraper.close()
+                try:
+                    scraper.close()
+                    time_module.sleep(0.2)  # 延迟确保资源释放
+                except Exception as e:
+                    logger.warning(f"关闭浏览器时出错: {str(e)}")
+                    # 继续运行，不影响程序
         else:
             scraper = WebScraper(use_session=True)
             if cookie:
@@ -1046,20 +1714,65 @@ def api_fetch():
         logger.error(f"抓取失败: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
 
+@app.route('/api/extract', methods=['POST'])
+def api_extract():
+    """提取数据API"""
+    try:
+        data = request.json
+        url = data.get('url', '')
+        content = data.get('content', '')
+        
+        if not content:
+            return jsonify({'success': False, 'error': '内容为空'})
+        
+        # 提取结构化信息
+        extracted_data = data_extractor.extract_all_info(content, url)
+        extracted_count = len([v for v in extracted_data.values() if v])
+        
+        logger.info(f"提取了 {extracted_count} 个字段")
+        
+        return jsonify({
+            'success': True,
+            'data': extracted_data,
+            'count': extracted_count
+        })
+    except Exception as e:
+        logger.error(f"提取数据失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'success': False, 'error': str(e)})
+
 @app.route('/api/save', methods=['POST'])
 def api_save():
     """保存API"""
     try:
         data = request.json
+        url = data.get('url', '')
+        content = data.get('content', '')
+        
+        # 提取结构化信息（如果还没有提取）
+        extracted_data = data.get('extracted_data')
+        if not extracted_data and content and url:
+            try:
+                extracted_data = data_extractor.extract_all_info(content, url)
+                logger.info(f"提取了 {len([v for v in extracted_data.values() if v])} 个字段")
+            except Exception as e:
+                logger.warning(f"提取数据时出错: {str(e)}")
+        
         saved_data = db_manager.save_page_data(
-            url=data.get('url'),
+            url=url,
             title=data.get('title', '无标题'),
-            content=data.get('content', '')
+            content=content,
+            extracted_data=extracted_data
         )
+        
+        extracted_count = len([v for v in extracted_data.values() if v]) if extracted_data else 0
+        
         return jsonify({
             'success': True,
             'id': saved_data.id,
-            'title': saved_data.title
+            'title': saved_data.title,
+            'extracted_fields': extracted_count
         })
     except Exception as e:
         logger.error(f"保存失败: {str(e)}")
@@ -1090,6 +1803,14 @@ def api_detail(data_id):
         all_data = db_manager.get_all_data()
         for data in all_data:
             if data.id == data_id:
+                # 解析提取的数据
+                extracted_data = None
+                if data.extracted_data:
+                    try:
+                        extracted_data = json.loads(data.extracted_data)
+                    except:
+                        pass
+                
                 return jsonify({
                     'success': True,
                     'data': {
@@ -1097,6 +1818,7 @@ def api_detail(data_id):
                         'url': data.url,
                         'title': data.title,
                         'content': data.content,
+                        'extracted_data': extracted_data,
                         'created_at': data.created_at.strftime('%Y-%m-%d %H:%M:%S') if data.created_at else ''
                     }
                 })
@@ -1107,9 +1829,67 @@ def api_detail(data_id):
 
 if __name__ == '__main__':
     import warnings
+    import signal
+    import sys
     
     # 忽略urllib3的OpenSSL警告（不影响功能，已知问题）
     warnings.filterwarnings('ignore', category=UserWarning, module='urllib3')
+    
+    # 全局异常处理，防止程序意外退出
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        """全局异常处理"""
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        # 对于段错误等严重错误，记录但不退出
+        logger.error("未捕获的异常:", exc_info=(exc_type, exc_value, exc_traceback))
+        # 不调用sys.exit()，让程序继续运行
+    
+    sys.excepthook = handle_exception
+    
+    # 定期清理空闲浏览器的后台任务
+    def cleanup_idle_browsers():
+        """定期清理空闲浏览器"""
+        while True:
+            try:
+                time_module.sleep(60)  # 每分钟检查一次
+                browser_manager.cleanup_idle()
+            except Exception as e:
+                logger.warning(f"清理空闲浏览器时出错: {str(e)}")
+    
+    cleanup_thread = threading.Thread(target=cleanup_idle_browsers, daemon=True)
+    cleanup_thread.start()
+    logger.info("已启动浏览器清理任务")
+    
+    # 程序退出时清理所有浏览器
+    def cleanup_on_exit():
+        """程序退出时清理资源"""
+        logger.info("正在关闭所有浏览器实例...")
+        browser_manager.close_all()
+    
+    signal.signal(signal.SIGINT, lambda s, f: cleanup_on_exit() or sys.exit(0))
+    signal.signal(signal.SIGTERM, lambda s, f: cleanup_on_exit() or sys.exit(0))
+    
+    # 设置信号处理，捕获段错误信号（如果可能）
+    try:
+        def sigsegv_handler(signum, frame):
+            """处理段错误信号"""
+            logger.error("收到段错误信号 (SIGSEGV)，但程序将继续运行")
+            # 不退出，让程序继续运行
+        
+        signal.signal(signal.SIGSEGV, sigsegv_handler)
+    except (ValueError, OSError):
+        # 在某些系统上可能无法设置SIGSEGV处理
+        pass
+    
+    # 信号处理，优雅退出
+    def signal_handler(sig, frame):
+        print("\n正在关闭服务器...")
+        browser_manager.close_all()
+        sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     print("=" * 60)
     print("🌐 网页抓取工具 Web GUI（优化版）")
@@ -1119,5 +1899,15 @@ if __name__ == '__main__':
     print("💡 按 Ctrl+C 停止服务器")
     print("=" * 60)
     
-    # 使用use_reloader=False可以减少资源泄漏警告和避免环境变量问题
-    app.run(debug=True, host='127.0.0.1', port=5000, use_reloader=False)
+    try:
+        # 使用use_reloader=False可以减少资源泄漏警告和避免环境变量问题
+        app.run(debug=True, host='127.0.0.1', port=5000, use_reloader=False)
+    except KeyboardInterrupt:
+        print("\n服务器已停止")
+    except Exception as e:
+        logger.error(f"服务器运行出错: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        # 即使出错也尝试继续运行
+        print("尝试重新启动服务器...")
+        app.run(debug=False, host='127.0.0.1', port=5000, use_reloader=False)

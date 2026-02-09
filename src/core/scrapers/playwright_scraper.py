@@ -1,6 +1,7 @@
 """
-基于Playwright的网页抓取模块（支持保存和加载登录态）
+基于Playwright的网页抓取器
 """
+from .base import BaseScraper
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 from bs4 import BeautifulSoup
 from typing import Optional, Dict
@@ -12,7 +13,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class PlaywrightScraper:
+class PlaywrightScraper(BaseScraper):
     """基于Playwright的网页抓取器（支持保存和加载登录态）"""
     
     def __init__(self, headless=True, storage_state_path=None, timeout=30000):

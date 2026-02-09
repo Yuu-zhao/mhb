@@ -69,24 +69,42 @@ class DatabaseManager:
         """获取数据库会话"""
         return self.SessionLocal()
     
-    def save_page_data(self, url, title, content):
+    def save_page_data(self, url, title, content=None, extracted_data=None):
         """
-        保存页面数据到数据库
+        保存页面数据到数据库（优化版：优先保存提取的数据）
         
         Args:
             url: 页面URL
             title: 页面标题
-            content: 页面内容
+            content: 页面内容（可选，如果提供了extracted_data，content可以只保存部分内容）
+            extracted_data: 提取的结构化数据（字典或JSON字符串），优先保存
             
         Returns:
             PageData对象
         """
         session = self.get_session()
         try:
+            # 将extracted_data转换为JSON字符串
+            import json
+            extracted_json = None
+            if extracted_data:
+                if isinstance(extracted_data, dict):
+                    extracted_json = json.dumps(extracted_data, ensure_ascii=False, indent=2)
+                else:
+                    extracted_json = str(extracted_data)
+            
+            # 如果提供了extracted_data，content可以只保存摘要或为空
+            # 这样可以节省数据库空间
+            if extracted_data and content:
+                # 只保存前10000字符作为参考
+                if len(content) > 10000:
+                    content = content[:10000] + "\n\n... (内容已截断，关键信息已提取)"
+            
             page_data = PageData(
                 url=url,
                 title=title,
                 content=content,
+                extracted_data=extracted_json,
                 created_at=datetime.now()
             )
             session.add(page_data)
