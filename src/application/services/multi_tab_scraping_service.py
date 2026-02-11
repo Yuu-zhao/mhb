@@ -10,6 +10,10 @@ from ...core.scrapers.base import BaseScraper
 from ...core.extractors.game_equip_extractor import DataExtractor
 from ...core.extractors.skill_extractor import SkillExtractor
 from ...core.extractors.equip_extractor import EquipExtractor
+from ...core.extractors.pet_extractor import PetExtractor
+from ...core.extractors.mount_extractor import MountExtractor
+from ...core.extractors.appearance_extractor import AppearanceExtractor
+from ...core.extractors.home_extractor import HomeExtractor
 from ...domain.entities.page_data import PageData
 
 logger = logging.getLogger(__name__)
@@ -29,6 +33,10 @@ class MultiTabScrapingService:
         self.basic_extractor = DataExtractor()
         self.skill_extractor = SkillExtractor()
         self.equip_extractor = EquipExtractor()
+        self.pet_extractor = PetExtractor()
+        self.mount_extractor = MountExtractor()
+        self.appearance_extractor = AppearanceExtractor()
+        self.home_extractor = HomeExtractor()
     
     def scrape_all_tabs(self, url: str, **kwargs) -> Optional[PageData]:
         """
@@ -66,11 +74,31 @@ class MultiTabScrapingService:
             logger.info("正在点击道具标签页...")
             equip_data = self._click_and_extract_tab('role_equips', self.equip_extractor.extract_equip_info)
             
+            # 4. 点击召唤兽/孩子标签页
+            logger.info("正在点击召唤兽/孩子标签页...")
+            pet_data = self._click_and_extract_tab('role_pets', self.pet_extractor.extract_pet_info)
+            
+            # 5. 点击坐骑标签页
+            logger.info("正在点击坐骑标签页...")
+            mount_data = self._click_and_extract_tab('role_riders', self.mount_extractor.extract_mount_info)
+            
+            # 6. 点击锦衣/外观标签页
+            logger.info("正在点击锦衣/外观标签页...")
+            appearance_data = self._click_and_extract_tab('role_clothes', self.appearance_extractor.extract_appearance_info)
+            
+            # 7. 点击玩家之家标签页
+            logger.info("正在点击玩家之家标签页...")
+            home_data = self._click_and_extract_tab('role_home', self.home_extractor.extract_home_info)
+            
             # 合并所有数据
             all_data = {
                 'basic_info': basic_data,
                 'skill_info': skill_data,
-                'equip_info': equip_data
+                'equip_info': equip_data,
+                'pet_info': pet_data,
+                'mount_info': mount_data,
+                'appearance_info': appearance_data,
+                'home_info': home_data
             }
             
             # 创建领域实体

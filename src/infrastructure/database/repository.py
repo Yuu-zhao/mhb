@@ -36,10 +36,11 @@ class PageDataRepository:
             inspector = inspect(self.engine)
             existing_tables = inspector.get_table_names()
             
-            if 'page_data' not in existing_tables:
-                logger.info("表 page_data 不存在，正在创建...")
+            # 检查新表名和旧表名（向后兼容）
+            if 'raw_page_data' not in existing_tables and 'page_data' not in existing_tables:
+                logger.info("表 raw_page_data 不存在，正在创建...")
                 Base.metadata.create_all(self.engine, checkfirst=True)
-                logger.info("表 page_data 创建成功")
+                logger.info("表 raw_page_data 创建成功")
         except Exception as e:
             logger.error(f"检查/创建表时出错: {str(e)}")
             Base.metadata.create_all(self.engine, checkfirst=True)
@@ -71,7 +72,7 @@ class PageDataRepository:
                 url=page_data.url,
                 title=page_data.title,
                 content=content,
-                extracted_data=extracted_json,
+                extracted_data_json=extracted_json,  # 使用新字段名
                 created_at=page_data.created_at
             )
             session.add(model)
@@ -118,9 +119,11 @@ class PageDataRepository:
     def _model_to_entity(self, model: PageDataModel) -> PageData:
         """将ORM模型转换为领域实体"""
         extracted_data = None
-        if model.extracted_data:
+        # 兼容新旧字段名
+        extracted_json = getattr(model, 'extracted_data_json', None) or getattr(model, 'extracted_data', None)
+        if extracted_json:
             try:
-                extracted_data = json.loads(model.extracted_data)
+                extracted_data = json.loads(extracted_json) if isinstance(extracted_json, str) else extracted_json
             except:
                 pass
         

@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 网页抓取Web GUI应用（优化版）
 简化界面，自动化Cookie获取流程
@@ -16,6 +17,9 @@ from pathlib import Path
 # 添加src目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
 from src.application.services.multi_tab_scraping_service import MultiTabScrapingService
+from src.application.services.data_mapper_service import DataMapperService
+from src.infrastructure.database.product_repository import ProductRepository
+from src.infrastructure.database.generic_repository import GenericRepository
 import logging
 import os
 import json
@@ -31,6 +35,720 @@ db_manager = DatabaseManager()
 data_extractor = DataExtractor()
 login_manager = LoginStateManager()  # 中心化登录态管理
 browser_manager = BrowserManager()  # 浏览器管理器（单例）
+product_repository = ProductRepository()  # 商品数据仓库
+data_mapper = DataMapperService()  # 数据映射服务
+generic_repository = GenericRepository()  # 泛型数据仓库
+
+# 数据浏览页面模板
+DATA_VIEW_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>数据详情 - {{ title }}</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 24px;
+            margin: 0;
+        }
+        .header .back-btn {
+            background: rgba(255,255,255,0.2);
+            color: white;
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .header .back-btn:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        .content {
+            padding: 30px;
+            display: flex;
+            gap: 30px;
+        }
+        .content-left {
+            flex: 1;
+            min-width: 0;
+        }
+        .content-right {
+            width: 50%;
+            min-width: 400px;
+        }
+        .goods-info-card {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 30px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        .goods-info-header {
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 20px;
+            margin-bottom: 20px;
+        }
+        .goods-info-header .price {
+            font-size: 36px;
+            color: #ff6600;
+            font-weight: bold;
+            margin: 15px 0;
+        }
+        .highlights {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .highlight-tag {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+            color: white;
+            padding: 6px 14px;
+            border-radius: 16px;
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .goods-info-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .goods-info-list li {
+            padding: 12px 0;
+            border-bottom: 1px solid #f5f5f5;
+            display: flex;
+            align-items: center;
+        }
+        .goods-info-list li:last-child {
+            border-bottom: none;
+        }
+        .goods-info-list li strong {
+            color: #333;
+            min-width: 140px;
+            font-weight: 600;
+        }
+        .goods-info-list li span {
+            color: #666;
+            flex: 1;
+        }
+        .tab-container {
+            margin-top: 30px;
+        }
+        .tab-buttons {
+            display: flex;
+            gap: 10px;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 25px;
+            flex-wrap: wrap;
+        }
+        .tab-button {
+            padding: 12px 24px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 15px;
+            color: #666;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        .tab-button:hover {
+            color: #667eea;
+        }
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .info-section {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .info-section h4 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+            font-weight: 600;
+            border-left: 4px solid #667eea;
+            padding-left: 12px;
+        }
+        .skill-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .skill-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .skill-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .skill-item .skill-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 8px;
+            font-size: 15px;
+        }
+        .skill-item .skill-level {
+            color: #667eea;
+            font-size: 16px;
+            font-weight: 600;
+        }
+        .equip-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+        .equip-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+            position: relative;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .equip-item:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        .equip-item.equipped::before {
+            content: "已装备";
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            background: #28a745;
+            color: white;
+            font-size: 11px;
+            padding: 3px 8px;
+            border-radius: 12px;
+        }
+        .pet-card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .pet-card h5 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 10px;
+        }
+        .pet-attr-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 12px;
+            margin-top: 15px;
+        }
+        .pet-attr-item {
+            background: #f8f9fa;
+            padding: 12px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .pet-attr-item .attr-label {
+            font-size: 13px;
+            color: #666;
+            margin-bottom: 6px;
+        }
+        .pet-attr-item .attr-value {
+            font-size: 16px;
+            font-weight: 600;
+            color: #333;
+        }
+        .meta-info {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #666;
+        }
+        .meta-info span {
+            margin-right: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📊 数据详情</h1>
+            <a href="/" class="back-btn">← 返回首页</a>
+        </div>
+        <div class="content">
+            <div class="content-left">
+                <div class="meta-info">
+                    <span><strong>ID:</strong> {{ data_id }}</span>
+                    <span><strong>创建时间:</strong> {{ created_at }}</span>
+                    <span><strong>URL:</strong> <a href="{{ url }}" target="_blank">{{ url[:60] }}{% if url|length > 60 %}...{% endif %}</a></span>
+                </div>
+                
+                {% if extracted_data %}
+                <!-- 标签页容器 -->
+                <div class="tab-container">
+                    <div class="tab-buttons">
+                        {% if extracted_data.basic_info %}
+                            <button class="tab-button active" onclick="switchTab('basic')">👤 人物/修炼</button>
+                        {% endif %}
+                        {% if extracted_data.skill_info %}
+                            <button class="tab-button" onclick="switchTab('skill')">⚔️ 技能</button>
+                        {% endif %}
+                        {% if extracted_data.equip_info %}
+                            <button class="tab-button" onclick="switchTab('equip')">🎒 道具/法宝</button>
+                        {% endif %}
+                        {% if extracted_data.pet_info %}
+                            <button class="tab-button" onclick="switchTab('pet')">🐉 召唤兽/孩子</button>
+                        {% endif %}
+                        {% if extracted_data.mount_info %}
+                            <button class="tab-button" onclick="switchTab('mount')">🐴 坐骑</button>
+                        {% endif %}
+                        {% if extracted_data.appearance_info %}
+                            <button class="tab-button" onclick="switchTab('appearance')">👗 锦衣/外观</button>
+                        {% endif %}
+                        {% if extracted_data.home_info %}
+                            <button class="tab-button" onclick="switchTab('home')">🏠 玩家之家</button>
+                        {% endif %}
+                    </div>
+                    
+                    <!-- 人物/修炼标签页 -->
+                    {% if extracted_data.basic_info %}
+                        <div class="tab-content active" id="tab-basic">
+                            {% set basic = extracted_data.basic_info %}
+                            <div class="info-section">
+                                <h4>角色属性</h4>
+                                <ul class="goods-info-list">
+                                    {% if basic.get('级别') %}<li><strong>级别：</strong><span>{{ basic['级别'] }}</span></li>{% endif %}
+                                    {% if basic.get('角色') %}<li><strong>角色：</strong><span>{{ basic['角色'] }}</span></li>{% endif %}
+                                    {% if basic.get('门派') %}<li><strong>门派：</strong><span>{{ basic['门派'] }}</span></li>{% endif %}
+                                    {% if basic.get('新版乾元丹数量') %}<li><strong>新版乾元丹数量：</strong><span>{{ basic['新版乾元丹数量'] }}</span></li>{% endif %}
+                                    {% if basic.get('月饼粽子机缘') %}<li><strong>月饼粽子机缘：</strong><span>{{ basic['月饼粽子机缘'] }}</span></li>{% endif %}
+                                    {% if basic.get('飞升/渡劫/化圣') %}<li><strong>飞升/渡劫/化圣：</strong><span>{{ basic['飞升/渡劫/化圣'] }}</span></li>{% endif %}
+                                    {% if basic.get('成就点数') %}<li><strong>成就点数：</strong><span>{{ basic['成就点数'] }}</span></li>{% endif %}
+                                    {% if basic.get('已用潜能果数量') %}<li><strong>已用潜能果数量：</strong><span>{{ basic['已用潜能果数量'] }}</span></li>{% endif %}
+                                    {% if basic.get('总经验') %}<li><strong>总经验：</strong><span>{{ basic['总经验'] }}</span></li>{% endif %}
+                                </ul>
+                            </div>
+                            <div class="info-section">
+                                <h4>修炼</h4>
+                                <ul class="goods-info-list">
+                                    {% if basic.get('攻击修炼') %}<li><strong>攻击修炼：</strong><span>{{ basic['攻击修炼'] }}</span></li>{% endif %}
+                                    {% if basic.get('防御修炼') %}<li><strong>防御修炼：</strong><span>{{ basic['防御修炼'] }}</span></li>{% endif %}
+                                    {% if basic.get('法术修炼') %}<li><strong>法术修炼：</strong><span>{{ basic['法术修炼'] }}</span></li>{% endif %}
+                                    {% if basic.get('抗法修炼') %}<li><strong>抗法修炼：</strong><span>{{ basic['抗法修炼'] }}</span></li>{% endif %}
+                                    {% if basic.get('猎术修炼') %}<li><strong>猎术修炼：</strong><span>{{ basic['猎术修炼'] }}</span></li>{% endif %}
+                                    {% if basic.get('育兽术') %}<li><strong>育兽术：</strong><span>{{ basic['育兽术'] }}</span></li>{% endif %}
+                                </ul>
+                            </div>
+                            <div class="info-section">
+                                <h4>控制力</h4>
+                                <ul class="goods-info-list">
+                                    {% if basic.get('攻击控制力') %}<li><strong>攻击控制力：</strong><span>{{ basic['攻击控制力'] }}</span></li>{% endif %}
+                                    {% if basic.get('防御控制力') %}<li><strong>防御控制力：</strong><span>{{ basic['防御控制力'] }}</span></li>{% endif %}
+                                    {% if basic.get('法术控制力') %}<li><strong>法术控制力：</strong><span>{{ basic['法术控制力'] }}</span></li>{% endif %}
+                                    {% if basic.get('抗法控制力') %}<li><strong>抗法控制力：</strong><span>{{ basic['抗法控制力'] }}</span></li>{% endif %}
+                                </ul>
+                            </div>
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 技能标签页 -->
+                    {% if extracted_data.skill_info %}
+                        <div class="tab-content" id="tab-skill">
+                            {% set skill = extracted_data.skill_info %}
+                            {% if skill.get('school_skills') %}
+                                <div class="info-section">
+                                    <h4>师门技能</h4>
+                                    <div class="skill-grid">
+                                        {% for s in skill['school_skills'] %}
+                                            <div class="skill-item">
+                                                <div class="skill-name">{{ s.get('name', '未知') }}</div>
+                                                <div class="skill-level">{{ s.get('level', '0') }}级</div>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if skill.get('life_skills') %}
+                                <div class="info-section">
+                                    <h4>生活技能</h4>
+                                    <div class="skill-grid">
+                                        {% for s in skill['life_skills'] %}
+                                            <div class="skill-item">
+                                                <div class="skill-name">{{ s.get('name', '未知') }}</div>
+                                                <div class="skill-level">{{ s.get('level', '0') }}级</div>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if skill.get('story_skills') %}
+                                <div class="info-section">
+                                    <h4>剧情技能</h4>
+                                    <div class="skill-grid">
+                                        {% for s in skill['story_skills'] %}
+                                            <div class="skill-item">
+                                                <div class="skill-name">{{ s.get('name', '未知') }}</div>
+                                                <div class="skill-level">{{ s.get('level', '0') }}级</div>
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                    {% if skill.get('story_skill_remaining_points') %}
+                                        <div style="margin-top: 15px; color: #666;">剩余技能点：{{ skill['story_skill_remaining_points'] }}</div>
+                                    {% endif %}
+                                </div>
+                            {% endif %}
+                            {% if skill.get('proficiency') %}
+                                <div class="info-section">
+                                    <h4>熟练度</h4>
+                                    <ul class="goods-info-list">
+                                        {% for key, value in skill['proficiency'].items() %}
+                                            <li><strong>{{ key }}：</strong><span>{{ value }}</span></li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 道具/法宝标签页 -->
+                    {% if extracted_data.equip_info %}
+                        <div class="tab-content" id="tab-equip">
+                            {% set equip = extracted_data.equip_info %}
+                            {% if equip.get('equipments') %}
+                                <div class="info-section">
+                                    <h4>已装备道具</h4>
+                                    <div class="equip-grid">
+                                        {% for item in equip['equipments'] %}
+                                            <div class="equip-item equipped">
+                                                <div class="skill-name">{{ item.get('name', '未知') }}</div>
+                                                {% if item.get('level') %}
+                                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">等级: {{ item['level'] }}</div>
+                                                {% endif %}
+                                                {% if item.get('type_desc') %}
+                                                    <div style="font-size: 11px; color: #999; margin-top: 3px;">{{ item['type_desc'] }}</div>
+                                                {% endif %}
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if equip.get('shenqi') %}
+                                <div class="info-section">
+                                    <h4>神器</h4>
+                                    <div class="equip-grid">
+                                        {% for item in equip['shenqi'] %}
+                                            <div class="equip-item equipped">
+                                                <div class="skill-name">{{ item.get('name', '未知') }}</div>
+                                                {% if item.get('level') %}
+                                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">等级: {{ item['level'] }}</div>
+                                                {% endif %}
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if equip.get('lingbao_equipped') %}
+                                <div class="info-section">
+                                    <h4>已装备灵宝</h4>
+                                    <div class="equip-grid">
+                                        {% for item in equip['lingbao_equipped'] %}
+                                            <div class="equip-item equipped">
+                                                <div class="skill-name">{{ item.get('name', '未知') }}</div>
+                                                {% if item.get('level') %}
+                                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">等级: {{ item['level'] }}</div>
+                                                {% endif %}
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if equip.get('fabao_equipped') %}
+                                <div class="info-section">
+                                    <h4>已装备法宝</h4>
+                                    <div class="equip-grid">
+                                        {% for item in equip['fabao_equipped'] %}
+                                            <div class="equip-item equipped">
+                                                <div class="skill-name">{{ item.get('name', '未知') }}</div>
+                                                {% if item.get('level') %}
+                                                    <div style="font-size: 12px; color: #666; margin-top: 5px;">等级: {{ item['level'] }}</div>
+                                                {% endif %}
+                                            </div>
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            {% endif %}
+                            {% if equip.get('currency') %}
+                                <div class="info-section">
+                                    <h4>货币</h4>
+                                    <ul class="goods-info-list">
+                                        {% for key, value in equip['currency'].items() %}
+                                            <li><strong>{{ key }}：</strong><span>{{ value }}</span></li>
+                                        {% endfor %}
+                                    </ul>
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 召唤兽/孩子标签页 -->
+                    {% if extracted_data.pet_info %}
+                        <div class="tab-content" id="tab-pet">
+                            {% set pet = extracted_data.pet_info %}
+                            {% if pet.get('pets') %}
+                                {% for p in pet['pets'] %}
+                                    <div class="pet-card">
+                                        <h5>召唤兽 {{ loop.index }}{% if p.get('pet_type') %} - {{ p['pet_type'] }}{% endif %}</h5>
+                                        <div class="pet-attr-grid">
+                                            {% if p.get('level') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">等级</div>
+                                                    <div class="attr-value">{{ p['level'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if p.get('hp') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">气血</div>
+                                                    <div class="attr-value">{{ p['hp'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if p.get('attack') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">攻击</div>
+                                                    <div class="attr-value">{{ p['attack'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if p.get('defense') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">防御</div>
+                                                    <div class="attr-value">{{ p['defense'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if p.get('speed') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">速度</div>
+                                                    <div class="attr-value">{{ p['speed'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                            {% if p.get('growth') %}
+                                                <div class="pet-attr-item">
+                                                    <div class="attr-label">成长</div>
+                                                    <div class="attr-value">{{ p['growth'] }}</div>
+                                                </div>
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                            {% if pet.get('children') %}
+                                <div class="info-section">
+                                    <h4>孩子</h4>
+                                    <p>共有 {{ pet['children']|length }} 个孩子</p>
+                                </div>
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 坐骑标签页 -->
+                    {% if extracted_data.mount_info %}
+                        <div class="tab-content" id="tab-mount">
+                            {% set mount = extracted_data.mount_info %}
+                            {% if mount.get('mounts') %}
+                                {% for m in mount['mounts'] %}
+                                    <div class="info-section">
+                                        <h4>坐骑 {{ loop.index }}{% if m.get('mount_type') %} - {{ m['mount_type'] }}{% endif %}</h4>
+                                        <ul class="goods-info-list">
+                                            {% if m.get('level') %}<li><strong>等级：</strong><span>{{ m['level'] }}</span></li>{% endif %}
+                                            {% if m.get('growth') %}<li><strong>成长：</strong><span>{{ m['growth'] }}</span></li>{% endif %}
+                                            {% if m.get('main_attribute') %}<li><strong>主属性：</strong><span>{{ m['main_attribute'] }}</span></li>{% endif %}
+                                        </ul>
+                                    </div>
+                                {% endfor %}
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 锦衣/外观标签页 -->
+                    {% if extracted_data.appearance_info %}
+                        <div class="tab-content" id="tab-appearance">
+                            {% set appearance = extracted_data.appearance_info %}
+                            {% if appearance.get('jinyi') %}
+                                {% if appearance['jinyi'].get('limited') %}
+                                    <div class="info-section">
+                                        <h4>限量锦衣</h4>
+                                        <div class="equip-grid">
+                                            {% for item in appearance['jinyi']['limited'] %}
+                                                <div class="equip-item">
+                                                    <div class="skill-name">{{ item }}</div>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                {% endif %}
+                                {% if appearance['jinyi'].get('normal') %}
+                                    <div class="info-section">
+                                        <h4>普通锦衣</h4>
+                                        <div class="equip-grid">
+                                            {% for item in appearance['jinyi']['normal'] %}
+                                                <div class="equip-item">
+                                                    <div class="skill-name">{{ item }}</div>
+                                                </div>
+                                            {% endfor %}
+                                        </div>
+                                    </div>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                    {% endif %}
+                    
+                    <!-- 玩家之家标签页 -->
+                    {% if extracted_data.home_info %}
+                        <div class="tab-content" id="tab-home">
+                            {% set home = extracted_data.home_info %}
+                            <div class="info-section">
+                                <h4>房屋信息</h4>
+                                <ul class="goods-info-list">
+                                    {% if home.get('house_level') %}<li><strong>房屋等级：</strong><span>{{ home['house_level'] }}</span></li>{% endif %}
+                                    {% if home.get('house_type') %}<li><strong>房屋类型：</strong><span>{{ home['house_type'] }}</span></li>{% endif %}
+                                    {% if home.get('house_fengshui') %}<li><strong>房屋风水：</strong><span>{{ home['house_fengshui'] }}</span></li>{% endif %}
+                                    {% if home.get('furniture_score') %}<li><strong>家具评分：</strong><span>{{ home['furniture_score'] }}</span></li>{% endif %}
+                                </ul>
+                            </div>
+                        </div>
+                    {% endif %}
+                </div>
+                {% else %}
+                    <div class="info-section">
+                        <p style="color: #999; text-align: center;">暂无提取数据</p>
+                    </div>
+                {% endif %}
+            </div>
+            
+            <div class="content-right">
+                {% if extracted_data %}
+                    {% if extracted_data.basic_info %}
+                        <!-- 商品基本信息卡片 -->
+                        <div class="goods-info-card">
+                            <div class="goods-info-header">
+                                {% if extracted_data.basic_info.get('价格') %}
+                                    <div class="price">{{ extracted_data.basic_info['价格'] }}</div>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('亮点') %}
+                                    <div class="highlights">
+                                        {% set highlights = extracted_data.basic_info['亮点'] %}
+                                        {% if highlights is string %}
+                                            {% set highlight_list = highlights.split('|') %}
+                                        {% else %}
+                                            {% set highlight_list = highlights %}
+                                        {% endif %}
+                                        {% for highlight in highlight_list %}
+                                            {% if highlight and highlight.strip() %}
+                                                <span class="highlight-tag">{{ highlight.strip() }}</span>
+                                            {% endif %}
+                                        {% endfor %}
+                                    </div>
+                                {% endif %}
+                            </div>
+                            <ul class="goods-info-list">
+                                {% if extracted_data.basic_info.get('编号') %}
+                                    <li><strong>编号：</strong><span>{{ extracted_data.basic_info['编号'] }}</span></li>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('卖家') %}
+                                    <li><strong>卖家：</strong><span>{{ extracted_data.basic_info['卖家'] }}</span></li>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('卖家ID') %}
+                                    <li><strong>卖家ID：</strong><span>{{ extracted_data.basic_info['卖家ID'] }}</span></li>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('是否上架') %}
+                                    <li><strong>是否上架：</strong><span>{{ extracted_data.basic_info['是否上架'] }}</span></li>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('是否接受还价') %}
+                                    <li><strong>是否接受还价：</strong><span>{{ '是' if extracted_data.basic_info['是否接受还价'] else '否' }}</span></li>
+                                {% endif %}
+                                {% if extracted_data.basic_info.get('出售剩余时间') %}
+                                    <li><strong>出售剩余时间：</strong><span>{{ extracted_data.basic_info['出售剩余时间'] }}</span></li>
+                                {% endif %}
+                            </ul>
+                        </div>
+                    {% endif %}
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        function switchTab(tabId) {
+            // 隐藏所有标签内容
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 移除所有按钮的active状态
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // 显示选中的标签内容
+            const tabContent = document.getElementById('tab-' + tabId);
+            if (tabContent) {
+                tabContent.classList.add('active');
+            }
+            
+            // 激活对应的按钮
+            event.target.classList.add('active');
+        }
+    </script>
+</body>
+</html>
+"""
 
 # 简化的HTML模板
 HTML_TEMPLATE = """
@@ -249,6 +967,193 @@ HTML_TEMPLATE = """
         }
         .data-table tr:hover {
             background: #f8f9fa;
+        }
+        /* 藏宝阁风格样式 */
+        .goods-info-card {
+            background: #fff;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        .goods-info-header {
+            border-bottom: 2px solid #f0f0f0;
+            padding-bottom: 15px;
+            margin-bottom: 15px;
+        }
+        .goods-info-header .price {
+            font-size: 28px;
+            color: #ff6600;
+            font-weight: bold;
+            margin: 10px 0;
+        }
+        .goods-info-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+        .goods-info-list li {
+            padding: 8px 0;
+            border-bottom: 1px solid #f5f5f5;
+            display: flex;
+            align-items: center;
+        }
+        .goods-info-list li:last-child {
+            border-bottom: none;
+        }
+        .goods-info-list li strong {
+            color: #333;
+            min-width: 120px;
+            font-weight: 600;
+        }
+        .goods-info-list li span {
+            color: #666;
+            flex: 1;
+        }
+        .highlights {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-top: 5px;
+        }
+        .highlight-tag {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ee5a6f 100%);
+            color: white;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+        .tab-container {
+            margin-top: 20px;
+        }
+        .tab-buttons {
+            display: flex;
+            gap: 10px;
+            border-bottom: 2px solid #e0e0e0;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+        .tab-button {
+            padding: 10px 20px;
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-size: 14px;
+            color: #666;
+            transition: all 0.3s;
+            font-weight: 500;
+        }
+        .tab-button:hover {
+            color: #667eea;
+        }
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .info-section {
+            background: #fafafa;
+            border: 1px solid #e8e8e8;
+            border-radius: 6px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .info-section h4 {
+            color: #333;
+            margin-bottom: 12px;
+            font-size: 16px;
+            font-weight: 600;
+            border-left: 4px solid #667eea;
+            padding-left: 10px;
+        }
+        .skill-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .skill-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+        }
+        .skill-item .skill-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        .skill-item .skill-level {
+            color: #667eea;
+            font-size: 14px;
+        }
+        .equip-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .equip-item {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+            text-align: center;
+            position: relative;
+        }
+        .equip-item.equipped::before {
+            content: "已装备";
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: #28a745;
+            color: white;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .pet-card {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .pet-card h5 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        .pet-attr-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }
+        .pet-attr-item {
+            background: #f8f9fa;
+            padding: 8px;
+            border-radius: 4px;
+            text-align: center;
+        }
+        .pet-attr-item .attr-label {
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 4px;
+        }
+        .pet-attr-item .attr-value {
+            font-size: 14px;
+            font-weight: 600;
+            color: #333;
         }
         .modal {
             display: none;
@@ -730,32 +1635,8 @@ HTML_TEMPLATE = """
         }
 
         function viewDetail(id) {
-            fetch(`/api/detail/${id}`)
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    let detailText = `详情:\\n\\nURL: ${data.data.url}\\n\\n标题: ${data.data.title || '无标题'}\\n\\n`;
-                    
-                    // 显示提取的关键信息
-                    if (data.data.extracted_data && Object.keys(data.data.extracted_data).length > 0) {
-                        detailText += '提取的关键信息:\\n';
-                        for (const [key, value] of Object.entries(data.data.extracted_data)) {
-                            if (value) {
-                                detailText += `${key}: ${value}\\n`;
-                            }
-                        }
-                        detailText += '\\n';
-                    }
-                    
-                    detailText += `内容: ${data.data.content ? data.data.content.substring(0, 500) + '...' : '无内容'}`;
-                    alert(detailText);
-                } else {
-                    showStatus('获取详情失败: ' + data.error, 'error');
-                }
-            })
-            .catch(error => {
-                showStatus('获取详情失败: ' + error.message, 'error');
-            });
+            // 跳转到数据浏览页面
+            window.open(`/view/${id}`, '_blank');
         }
 
         function closeModal() {
@@ -791,120 +1672,414 @@ HTML_TEMPLATE = """
             const extractedDiv = document.getElementById('previewExtracted');
             let html = '<div class="multi-tab-data-container">';
             
-            // 基础信息（人物/修炼）
+            // 商品基本信息卡片（参考藏宝阁样式）
             if (data.basic_info && Object.keys(data.basic_info).length > 0) {
-                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">📊 人物/修炼</h3>';
-                html += '<table style="width: 100%; font-size: 12px; border-collapse: collapse; margin-bottom: 15px;">';
-                for (const [key, value] of Object.entries(data.basic_info)) {
-                    if (value) {
-                        html += `<tr><td style="font-weight: bold; padding: 4px 8px; color: #667eea; width: 40%; background: #f5f5f5;">${key}:</td><td style="padding: 4px 8px; background: #fff;">${value}</td></tr>`;
-                    }
-                }
-                html += '</table></div>';
-            }
-            
-            // 技能信息
-            if (data.skill_info && Object.keys(data.skill_info).length > 0) {
-                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">⚔️ 技能</h3>';
+                const basic = data.basic_info;
+                html += '<div class="goods-info-card">';
+                html += '<div class="goods-info-header">';
                 
-                // 师门技能
-                if (data.skill_info.school_skills && data.skill_info.school_skills.length > 0) {
-                    html += '<div style="margin-bottom: 10px;"><strong>师门技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
-                    data.skill_info.school_skills.forEach(skill => {
-                        html += `<li>${skill.name} (${skill.level}级)</li>`;
+                // 价格（突出显示）
+                if (basic['价格']) {
+                    html += `<div class="price">${basic['价格']}</div>`;
+                }
+                
+                // 亮点
+                if (basic['亮点']) {
+                    const highlights = Array.isArray(basic['亮点']) ? basic['亮点'] : basic['亮点'].split('|');
+                    html += '<div class="highlights">';
+                    highlights.forEach(h => {
+                        if (h && h.trim()) {
+                            html += `<span class="highlight-tag">${h.trim()}</span>`;
+                        }
                     });
-                    html += '</ul></div>';
-                }
-                
-                // 生活技能
-                if (data.skill_info.life_skills && data.skill_info.life_skills.length > 0) {
-                    html += '<div style="margin-bottom: 10px;"><strong>生活技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
-                    data.skill_info.life_skills.forEach(skill => {
-                        html += `<li>${skill.name} (${skill.level}级)</li>`;
-                    });
-                    html += '</ul></div>';
-                }
-                
-                // 剧情技能
-                if (data.skill_info.juqing_skills && data.skill_info.juqing_skills.length > 0) {
-                    html += '<div style="margin-bottom: 10px;"><strong>剧情技能:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
-                    data.skill_info.juqing_skills.forEach(skill => {
-                        html += `<li>${skill.name} (${skill.level}级)</li>`;
-                    });
-                    html += '</ul></div>';
-                }
-                
-                // 熟练度
-                if (data.skill_info.proficiency && Object.keys(data.skill_info.proficiency).length > 0) {
-                    html += '<div style="margin-bottom: 10px;"><strong>熟练度:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
-                    for (const [key, value] of Object.entries(data.skill_info.proficiency)) {
-                        html += `<li>${key}: ${value}</li>`;
-                    }
-                    html += '</ul></div>';
+                    html += '</div>';
                 }
                 
                 html += '</div>';
-            }
-            
-            // 道具/法宝信息
-            if (data.equip_info && Object.keys(data.equip_info).length > 0) {
-                html += '<div class="tab-section"><h3 style="color: #667eea; margin-bottom: 10px; padding: 8px; background: #f0f0f0; border-left: 4px solid #667eea;">🎒 道具/法宝</h3>';
                 
-                // 装备数量
-                if (data.equip_info.equipments && data.equip_info.equipments.length > 0) {
-                    html += `<div style="margin-bottom: 10px;"><strong>装备 (${data.equip_info.equipments.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
-                    data.equip_info.equipments.forEach(equip => {
-                        html += `<li>${equip.name}</li>`;
-                    });
-                    html += '</ul></div>';
-                }
+                // 商品信息列表
+                html += '<ul class="goods-info-list">';
+                const infoFields = [
+                    {key: '编号', label: '编号'},
+                    {key: '卖家', label: '卖家'},
+                    {key: '卖家ID', label: '卖家ID'},
+                    {key: '是否上架', label: '是否上架'},
+                    {key: '是否接受还价', label: '是否接受还价', format: (v) => v ? '是' : '否'},
+                    {key: '出售剩余时间', label: '出售剩余时间'}
+                ];
                 
-                // 神器
-                if (data.equip_info.shenqi && data.equip_info.shenqi.length > 0) {
-                    html += `<div style="margin-bottom: 10px;"><strong>神器 (${data.equip_info.shenqi.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
-                    data.equip_info.shenqi.forEach(item => {
-                        html += `<li>${item.name}</li>`;
-                    });
-                    html += '</ul></div>';
-                }
-                
-                // 已装备灵宝
-                if (data.equip_info.lingbao_equipped && data.equip_info.lingbao_equipped.length > 0) {
-                    html += `<div style="margin-bottom: 10px;"><strong>已装备灵宝 (${data.equip_info.lingbao_equipped.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
-                    data.equip_info.lingbao_equipped.forEach(item => {
-                        html += `<li>${item.name}</li>`;
-                    });
-                    html += '</ul></div>';
-                }
-                
-                // 已装备法宝
-                if (data.equip_info.fabao_equipped && data.equip_info.fabao_equipped.length > 0) {
-                    html += `<div style="margin-bottom: 10px;"><strong>已装备法宝 (${data.equip_info.fabao_equipped.length}件):</strong><ul style="margin: 5px 0; padding-left: 20px;">`;
-                    data.equip_info.fabao_equipped.forEach(item => {
-                        html += `<li>${item.name}</li>`;
-                    });
-                    html += '</ul></div>';
-                }
-                
-                // 货币信息
-                if (data.equip_info.currency && Object.keys(data.equip_info.currency).length > 0) {
-                    html += '<div style="margin-bottom: 10px;"><strong>货币:</strong><ul style="margin: 5px 0; padding-left: 20px;">';
-                    for (const [key, value] of Object.entries(data.equip_info.currency)) {
-                        html += `<li>${key}: ${value}</li>`;
+                infoFields.forEach(field => {
+                    if (basic[field.key]) {
+                        const value = field.format ? field.format(basic[field.key]) : basic[field.key];
+                        html += `<li><strong>${field.label}：</strong><span>${value}</span></li>`;
                     }
-                    html += '</ul></div>';
-                }
-                
-                // 行囊扩展
-                if (data.equip_info.bag_expansion) {
-                    html += `<div style="margin-bottom: 10px;"><strong>行囊扩展:</strong> ${data.equip_info.bag_expansion}</div>`;
-                }
-                
+                });
+                html += '</ul>';
                 html += '</div>';
             }
             
+            // 标签页容器
+            html += '<div class="tab-container">';
+            html += '<div class="tab-buttons">';
+            const tabs = [];
+            if (data.basic_info) tabs.push({id: 'basic', label: '人物/修炼', icon: '👤'});
+            if (data.skill_info) tabs.push({id: 'skill', label: '技能', icon: '⚔️'});
+            if (data.equip_info) tabs.push({id: 'equip', label: '道具/法宝', icon: '🎒'});
+            if (data.pet_info) tabs.push({id: 'pet', label: '召唤兽/孩子', icon: '🐉'});
+            if (data.mount_info) tabs.push({id: 'mount', label: '坐骑', icon: '🐴'});
+            if (data.appearance_info) tabs.push({id: 'appearance', label: '锦衣/外观', icon: '👗'});
+            if (data.home_info) tabs.push({id: 'home', label: '玩家之家', icon: '🏠'});
+            
+            tabs.forEach((tab, index) => {
+                html += `<button class="tab-button ${index === 0 ? 'active' : ''}" onclick="switchTab('${tab.id}')">${tab.icon} ${tab.label}</button>`;
+            });
             html += '</div>';
+            
+            // 人物/修炼标签页
+            if (data.basic_info) {
+                html += `<div class="tab-content ${tabs[0]?.id === 'basic' ? 'active' : ''}" id="tab-basic">`;
+                html += displayCharacterInfo(data.basic_info);
+                html += '</div>';
+            }
+            
+            // 技能标签页
+            if (data.skill_info) {
+                html += `<div class="tab-content" id="tab-skill">`;
+                html += displaySkillInfo(data.skill_info);
+                html += '</div>';
+            }
+            
+            // 道具/法宝标签页
+            if (data.equip_info) {
+                html += `<div class="tab-content" id="tab-equip">`;
+                html += displayEquipInfo(data.equip_info);
+                html += '</div>';
+            }
+            
+            // 召唤兽/孩子标签页
+            if (data.pet_info) {
+                html += `<div class="tab-content" id="tab-pet">`;
+                html += displayPetInfo(data.pet_info);
+                html += '</div>';
+            }
+            
+            // 坐骑标签页
+            if (data.mount_info) {
+                html += `<div class="tab-content" id="tab-mount">`;
+                html += displayMountInfo(data.mount_info);
+                html += '</div>';
+            }
+            
+            // 锦衣/外观标签页
+            if (data.appearance_info) {
+                html += `<div class="tab-content" id="tab-appearance">`;
+                html += displayAppearanceInfo(data.appearance_info);
+                html += '</div>';
+            }
+            
+            // 玩家之家标签页
+            if (data.home_info) {
+                html += `<div class="tab-content" id="tab-home">`;
+                html += displayHomeInfo(data.home_info);
+                html += '</div>';
+            }
+            
+            html += '</div></div>';
             extractedDiv.innerHTML = html;
+        }
+        
+        // 显示角色信息
+        function displayCharacterInfo(basic) {
+            let html = '<div class="info-section"><h4>角色属性</h4>';
+            html += '<ul class="goods-info-list">';
+            const charFields = [
+                {key: '级别', label: '级别'},
+                {key: '角色', label: '角色'},
+                {key: '门派', label: '门派'},
+                {key: '新版乾元丹数量', label: '新版乾元丹数量'},
+                {key: '月饼粽子机缘', label: '月饼粽子机缘'},
+                {key: '飞升/渡劫/化圣', label: '飞升/渡劫/化圣'},
+                {key: '成就点数', label: '成就点数'},
+                {key: '已用潜能果数量', label: '已用潜能果数量'},
+                {key: '总经验', label: '总经验'}
+            ];
+            charFields.forEach(field => {
+                if (basic[field.key]) {
+                    html += `<li><strong>${field.label}：</strong><span>${basic[field.key]}</span></li>`;
+                }
+            });
+            html += '</ul></div>';
+            
+            html += '<div class="info-section"><h4>修炼</h4>';
+            html += '<ul class="goods-info-list">';
+            const cultivationFields = [
+                {key: '攻击修炼', label: '攻击修炼'},
+                {key: '防御修炼', label: '防御修炼'},
+                {key: '法术修炼', label: '法术修炼'},
+                {key: '抗法修炼', label: '抗法修炼'},
+                {key: '猎术修炼', label: '猎术修炼'},
+                {key: '育兽术', label: '育兽术'}
+            ];
+            cultivationFields.forEach(field => {
+                if (basic[field.key]) {
+                    html += `<li><strong>${field.label}：</strong><span>${basic[field.key]}</span></li>`;
+                }
+            });
+            html += '</ul></div>';
+            
+            html += '<div class="info-section"><h4>控制力</h4>';
+            html += '<ul class="goods-info-list">';
+            const controlFields = [
+                {key: '攻击控制力', label: '攻击控制力'},
+                {key: '防御控制力', label: '防御控制力'},
+                {key: '法术控制力', label: '法术控制力'},
+                {key: '抗法控制力', label: '抗法控制力'}
+            ];
+            controlFields.forEach(field => {
+                if (basic[field.key]) {
+                    html += `<li><strong>${field.label}：</strong><span>${basic[field.key]}</span></li>`;
+                }
+            });
+            html += '</ul></div>';
+            
+            return html;
+        }
+        
+        // 显示技能信息
+        function displaySkillInfo(skillInfo) {
+            let html = '';
+            
+            if (skillInfo.school_skills && skillInfo.school_skills.length > 0) {
+                html += '<div class="info-section"><h4>师门技能</h4>';
+                html += '<div class="skill-grid">';
+                skillInfo.school_skills.forEach(skill => {
+                    html += `<div class="skill-item">
+                        <div class="skill-name">${skill.name || '未知'}</div>
+                        <div class="skill-level">${skill.level || '0'}级</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+            }
+            
+            if (skillInfo.life_skills && skillInfo.life_skills.length > 0) {
+                html += '<div class="info-section"><h4>生活技能</h4>';
+                html += '<div class="skill-grid">';
+                skillInfo.life_skills.forEach(skill => {
+                    html += `<div class="skill-item">
+                        <div class="skill-name">${skill.name || '未知'}</div>
+                        <div class="skill-level">${skill.level || '0'}级</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+            }
+            
+            if (skillInfo.story_skills && skillInfo.story_skills.length > 0) {
+                html += '<div class="info-section"><h4>剧情技能</h4>';
+                html += '<div class="skill-grid">';
+                skillInfo.story_skills.forEach(skill => {
+                    html += `<div class="skill-item">
+                        <div class="skill-name">${skill.name || '未知'}</div>
+                        <div class="skill-level">${skill.level || '0'}级</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+                if (skillInfo.story_skill_remaining_points) {
+                    html += `<div style="margin-top: 10px; color: #666;">剩余技能点：${skillInfo.story_skill_remaining_points}</div>`;
+                }
+            }
+            
+            if (skillInfo.proficiency && Object.keys(skillInfo.proficiency).length > 0) {
+                html += '<div class="info-section"><h4>熟练度</h4>';
+                html += '<ul class="goods-info-list">';
+                for (const [key, value] of Object.entries(skillInfo.proficiency)) {
+                    html += `<li><strong>${key}：</strong><span>${value}</span></li>`;
+                }
+                html += '</ul></div>';
+            }
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无技能信息</p></div>';
+        }
+        
+        // 显示道具/法宝信息
+        function displayEquipInfo(equipInfo) {
+            let html = '';
+            
+            if (equipInfo.using_equips && equipInfo.using_equips.length > 0) {
+                html += '<div class="info-section"><h4>已装备道具</h4>';
+                html += '<div class="equip-grid">';
+                equipInfo.using_equips.forEach(equip => {
+                    html += `<div class="equip-item equipped">
+                        <div class="skill-name">${equip.name || '未知'}</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+            }
+            
+            if (equipInfo.artifacts && equipInfo.artifacts.name) {
+                html += '<div class="info-section"><h4>神器</h4>';
+                html += `<div class="equip-item equipped">
+                    <div class="skill-name">${equipInfo.artifacts.name}</div>
+                </div></div>`;
+            }
+            
+            if (equipInfo.using_spirit_treasures && equipInfo.using_spirit_treasures.length > 0) {
+                html += '<div class="info-section"><h4>已装备灵宝</h4>';
+                html += '<div class="equip-grid">';
+                equipInfo.using_spirit_treasures.forEach(item => {
+                    html += `<div class="equip-item equipped">
+                        <div class="skill-name">${item.name || '未知'}</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+            }
+            
+            if (equipInfo.using_magic_treasures && equipInfo.using_magic_treasures.length > 0) {
+                html += '<div class="info-section"><h4>已装备法宝</h4>';
+                html += '<div class="equip-grid">';
+                equipInfo.using_magic_treasures.forEach(item => {
+                    html += `<div class="equip-item equipped">
+                        <div class="skill-name">${item.name || '未知'}</div>
+                    </div>`;
+                });
+                html += '</div></div>';
+            }
+            
+            if (equipInfo.currency && Object.keys(equipInfo.currency).length > 0) {
+                html += '<div class="info-section"><h4>货币</h4>';
+                html += '<ul class="goods-info-list">';
+                for (const [key, value] of Object.entries(equipInfo.currency)) {
+                    html += `<li><strong>${key}：</strong><span>${value}</span></li>`;
+                }
+                html += '</ul></div>';
+            }
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无道具信息</p></div>';
+        }
+        
+        // 显示召唤兽信息
+        function displayPetInfo(petInfo) {
+            let html = '';
+            
+            if (petInfo.pets && petInfo.pets.length > 0) {
+                petInfo.pets.forEach((pet, index) => {
+                    html += `<div class="pet-card">
+                        <h5>召唤兽 ${index + 1}${pet.pet_type ? ' - ' + pet.pet_type : ''}</h5>
+                        <div class="pet-attr-grid">`;
+                    
+                    const attrs = [
+                        {key: 'level', label: '等级'},
+                        {key: 'hp', label: '气血'},
+                        {key: 'mp', label: '魔法'},
+                        {key: 'attack', label: '攻击'},
+                        {key: 'defense', label: '防御'},
+                        {key: 'speed', label: '速度'},
+                        {key: 'growth', label: '成长'}
+                    ];
+                    
+                    attrs.forEach(attr => {
+                        if (pet[attr.key]) {
+                            html += `<div class="pet-attr-item">
+                                <div class="attr-label">${attr.label}</div>
+                                <div class="attr-value">${pet[attr.key]}</div>
+                            </div>`;
+                        }
+                    });
+                    
+                    html += '</div></div>';
+                });
+            }
+            
+            if (petInfo.children && petInfo.children.length > 0) {
+                html += '<div class="info-section"><h4>孩子</h4>';
+                html += `<p>共有 ${petInfo.children.length} 个孩子</p></div>`;
+            }
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无召唤兽信息</p></div>';
+        }
+        
+        // 显示坐骑信息
+        function displayMountInfo(mountInfo) {
+            let html = '';
+            
+            if (mountInfo.mounts && mountInfo.mounts.length > 0) {
+                mountInfo.mounts.forEach((mount, index) => {
+                    html += `<div class="info-section">
+                        <h4>坐骑 ${index + 1}${mount.mount_type ? ' - ' + mount.mount_type : ''}</h4>
+                        <ul class="goods-info-list">`;
+                    
+                    if (mount.level) html += `<li><strong>等级：</strong><span>${mount.level}</span></li>`;
+                    if (mount.growth) html += `<li><strong>成长：</strong><span>${mount.growth}</span></li>`;
+                    if (mount.main_attribute) html += `<li><strong>主属性：</strong><span>${mount.main_attribute}</span></li>`;
+                    
+                    html += '</ul></div>';
+                });
+            }
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无坐骑信息</p></div>';
+        }
+        
+        // 显示外观信息
+        function displayAppearanceInfo(appearanceInfo) {
+            let html = '';
+            
+            if (appearanceInfo.jinyi) {
+                if (appearanceInfo.jinyi.limited && appearanceInfo.jinyi.limited.length > 0) {
+                    html += '<div class="info-section"><h4>限量锦衣</h4>';
+                    html += '<div class="equip-grid">';
+                    appearanceInfo.jinyi.limited.forEach(item => {
+                        html += `<div class="equip-item"><div class="skill-name">${item}</div></div>`;
+                    });
+                    html += '</div></div>';
+                }
+                
+                if (appearanceInfo.jinyi.normal && appearanceInfo.jinyi.normal.length > 0) {
+                    html += '<div class="info-section"><h4>普通锦衣</h4>';
+                    html += '<div class="equip-grid">';
+                    appearanceInfo.jinyi.normal.forEach(item => {
+                        html += `<div class="equip-item"><div class="skill-name">${item}</div></div>`;
+                    });
+                    html += '</div></div>';
+                }
+            }
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无外观信息</p></div>';
+        }
+        
+        // 显示玩家之家信息
+        function displayHomeInfo(homeInfo) {
+            let html = '<div class="info-section"><h4>房屋信息</h4>';
+            html += '<ul class="goods-info-list">';
+            
+            if (homeInfo.house_level) html += `<li><strong>房屋等级：</strong><span>${homeInfo.house_level}</span></li>`;
+            if (homeInfo.house_type) html += `<li><strong>房屋类型：</strong><span>${homeInfo.house_type}</span></li>`;
+            if (homeInfo.house_fengshui) html += `<li><strong>房屋风水：</strong><span>${homeInfo.house_fengshui}</span></li>`;
+            if (homeInfo.furniture_score) html += `<li><strong>家具评分：</strong><span>${homeInfo.furniture_score}</span></li>`;
+            
+            html += '</ul></div>';
+            
+            return html || '<div class="info-section"><p style="color: #999; text-align: center;">暂无玩家之家信息</p></div>';
+        }
+        
+        // 切换标签页
+        function switchTab(tabId) {
+            // 隐藏所有标签内容
+            document.querySelectorAll('.tab-content').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // 移除所有按钮的active状态
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // 显示选中的标签内容
+            const tabContent = document.getElementById(`tab-${tabId}`);
+            if (tabContent) {
+                tabContent.classList.add('active');
+            }
+            
+            // 激活对应的按钮
+            event.target.classList.add('active');
         }
 
         function clearPreview() {
@@ -1759,23 +2934,77 @@ def api_save():
             except Exception as e:
                 logger.warning(f"提取数据时出错: {str(e)}")
         
-        saved_data = db_manager.save_page_data(
-            url=url,
-            title=data.get('title', '无标题'),
-            content=content,
-            extracted_data=extracted_data
+        # 检查是否是多标签页数据（包含basic_info, skill_info等）
+        is_multi_tab_data = extracted_data and isinstance(extracted_data, dict) and (
+            'basic_info' in extracted_data or 
+            'skill_info' in extracted_data or 
+            'equip_info' in extracted_data
         )
         
-        extracted_count = len([v for v in extracted_data.values() if v]) if extracted_data else 0
+        if is_multi_tab_data:
+            # 使用新的ProductRepository保存
+            try:
+                product = data_mapper.map_to_product(extracted_data, url)
+                saved_product = product_repository.save_product(product, extracted_data)
+                
+                # 同时保存到泛型表
+                try:
+                    generic_repository.save_data(saved_product.product_id, extracted_data)
+                    logger.info(f"已保存到泛型表，product_id={saved_product.product_id}")
+                except Exception as e:
+                    logger.warning(f"保存到泛型表失败: {str(e)}")
+                
+                # 统计提取的字段数
+                extracted_count = 0
+                if extracted_data:
+                    for tab_name, tab_data in extracted_data.items():
+                        if isinstance(tab_data, dict):
+                            extracted_count += len([v for v in tab_data.values() if v])
+                
+                return jsonify({
+                    'success': True,
+                    'id': saved_product.product_id,
+                    'title': f"商品 {saved_product.item_id}",
+                    'extracted_fields': extracted_count,
+                    'product_type': saved_product.product_type
+                })
+            except Exception as e:
+                logger.error(f"使用ProductRepository保存失败，回退到旧方式: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                # 回退到旧的保存方式
+                is_multi_tab_data = False
         
-        return jsonify({
-            'success': True,
-            'id': saved_data.id,
-            'title': saved_data.title,
-            'extracted_fields': extracted_count
-        })
+        if not is_multi_tab_data:
+            # 使用旧的PageDataRepository保存（向后兼容）
+            saved_data = db_manager.save_page_data(
+                url=url,
+                title=data.get('title', '无标题'),
+                content=content,
+                extracted_data=extracted_data
+            )
+            
+            # 同时保存到泛型表
+            if extracted_data:
+                try:
+                    generic_repository.save_data(saved_data.id, extracted_data)
+                    logger.info(f"已保存到泛型表，data_id={saved_data.id}")
+                except Exception as e:
+                    logger.warning(f"保存到泛型表失败: {str(e)}")
+            
+            extracted_count = len([v for v in extracted_data.values() if v]) if extracted_data else 0
+            
+            return jsonify({
+                'success': True,
+                'id': saved_data.id,
+                'title': saved_data.title,
+                'extracted_fields': extracted_count
+            })
+            
     except Exception as e:
         logger.error(f"保存失败: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/list', methods=['GET'])
@@ -1826,6 +3055,34 @@ def api_detail(data_id):
     except Exception as e:
         logger.error(f"获取详情失败: {str(e)}")
         return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/view/<int:data_id>')
+def view_data_page(data_id):
+    """数据浏览页面"""
+    try:
+        all_data = db_manager.get_all_data()
+        for data in all_data:
+            if data.id == data_id:
+                # 解析提取的数据
+                extracted_data = None
+                if data.extracted_data:
+                    try:
+                        extracted_data = json.loads(data.extracted_data)
+                    except:
+                        pass
+                
+                # 渲染展示页面
+                return render_template_string(DATA_VIEW_TEMPLATE, 
+                    data_id=data.id,
+                    url=data.url,
+                    title=data.title or '无标题',
+                    extracted_data=extracted_data or {},
+                    created_at=data.created_at.strftime('%Y-%m-%d %H:%M:%S') if data.created_at else ''
+                )
+        return "数据不存在", 404
+    except Exception as e:
+        logger.error(f"获取详情失败: {str(e)}")
+        return f"获取数据失败: {str(e)}", 500
 
 if __name__ == '__main__':
     import warnings

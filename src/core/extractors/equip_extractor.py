@@ -42,10 +42,16 @@ class EquipExtractor:
                 for img in equip_table.find_all('img', id=re.compile(r'role_using_equip_\d+')):
                     equip_name = img.get('data_equip_name', '')
                     equip_desc = img.get('data_equip_desc', '')
+                    equip_type = img.get('data_equip_type', '')
+                    equip_level = img.get('data_equip_level', '')
+                    equip_type_desc = img.get('data_equip_type_desc', '')
                     if equip_name:
                         result['equipments'].append({
                             'name': equip_name,
-                            'desc': equip_desc[:200] if equip_desc else ''  # 只保存前200字符
+                            'desc': equip_desc if equip_desc else '',
+                            'type': equip_type,
+                            'level': equip_level,
+                            'type_desc': equip_type_desc
                         })
             
             # 提取神器
@@ -54,10 +60,14 @@ class EquipExtractor:
                 for td in shenqi_table.find_all('td', class_='shenqi_td'):
                     shenqi_name = td.get('data_equip_name', '')
                     shenqi_desc = td.get('data_equip_desc', '')
+                    shenqi_type = td.get('data_equip_type', '')
+                    shenqi_level = td.get('data_equip_level', '')
                     if shenqi_name:
                         result['shenqi'].append({
                             'name': shenqi_name,
-                            'desc': shenqi_desc[:200] if shenqi_desc else ''
+                            'desc': shenqi_desc if shenqi_desc else '',
+                            'type': shenqi_type,
+                            'level': shenqi_level
                         })
             
             # 提取已装备灵宝
@@ -66,10 +76,14 @@ class EquipExtractor:
                 for td in lingbao_equipped.find_all('td'):
                     lingbao_name = td.get('data_equip_name', '')
                     lingbao_desc = td.get('data_equip_desc', '')
+                    lingbao_type = td.get('data_equip_type', '')
+                    lingbao_level = td.get('data_equip_level', '')
                     if lingbao_name:
                         result['lingbao_equipped'].append({
                             'name': lingbao_name,
-                            'desc': lingbao_desc[:200] if lingbao_desc else ''
+                            'desc': lingbao_desc if lingbao_desc else '',
+                            'type': lingbao_type,
+                            'level': lingbao_level
                         })
             
             # 提取未装备灵宝
@@ -78,10 +92,14 @@ class EquipExtractor:
                 for td in lingbao_stored.find_all('td'):
                     lingbao_name = td.get('data_equip_name', '')
                     lingbao_desc = td.get('data_equip_desc', '')
+                    lingbao_type = td.get('data_equip_type', '')
+                    lingbao_level = td.get('data_equip_level', '')
                     if lingbao_name:
                         result['lingbao_stored'].append({
                             'name': lingbao_name,
-                            'desc': lingbao_desc[:200] if lingbao_desc else ''
+                            'desc': lingbao_desc if lingbao_desc else '',
+                            'type': lingbao_type,
+                            'level': lingbao_level
                         })
             
             # 提取已装备法宝
@@ -90,10 +108,14 @@ class EquipExtractor:
                 for td in fabao_equipped.find_all('td'):
                     fabao_name = td.get('data_equip_name', '')
                     fabao_desc = td.get('data_equip_desc', '')
+                    fabao_type = td.get('data_equip_type', '')
+                    fabao_level = td.get('data_equip_level', '')
                     if fabao_name:
                         result['fabao_equipped'].append({
                             'name': fabao_name,
-                            'desc': fabao_desc[:200] if fabao_desc else ''
+                            'desc': fabao_desc if fabao_desc else '',
+                            'type': fabao_type,
+                            'level': fabao_level
                         })
             
             # 提取未装备法宝
@@ -102,10 +124,14 @@ class EquipExtractor:
                 for td in fabao_stored.find_all('td'):
                     fabao_name = td.get('data_equip_name', '')
                     fabao_desc = td.get('data_equip_desc', '')
+                    fabao_type = td.get('data_equip_type', '')
+                    fabao_level = td.get('data_equip_level', '')
                     if fabao_name:
                         result['fabao_stored'].append({
                             'name': fabao_name,
-                            'desc': fabao_desc[:200] if fabao_desc else ''
+                            'desc': fabao_desc if fabao_desc else '',
+                            'type': fabao_type,
+                            'level': fabao_level
                         })
             
             # 提取货币信息
