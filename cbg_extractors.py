@@ -1,0 +1,203 @@
+"""
+按页面类型分块抽取，输出可落库的嵌套结构（与 cbg_catalog 分类对应）
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, Dict, List, Optional
+
+from bs4 import BeautifulSoup
+
+from cbg_classification import classify_cbg_page, extract_eid_from_url
+from data_extractor import DataExtractor
+
+
+def _find_goods_info(soup: BeautifulSoup):
+    for div in soup.find_all("div", class_=True):
+        cls = div.get("class", [])
+        if "infoList" in cls and "goodsInfo" in cls:
+            return div
+    return None
+
+
+def _tb02_to_dict(table) -> Dict[str, str]:
+    out: Dict[str, str] = {}
+    for tr in table.find_all("tr"):
+        th, td = tr.find("th"), tr.find("td")
+        if not th or not td:
+            continue
+        k = th.get_text(strip=True).replace("：", "")
+        v = td.get_text(strip=True)
+        if k:
+            out[k] = v
+    return out
+
+
+def _extract_pet_sections(soup: BeautifulSoup) -> Dict[str, Any]:
+    panel = soup.find("div", id="pet_attr_panel")
+    if not panel:
+        return {}
+
+    sections: Dict[str, Any] = {"属性": {}, "资质": {}, "技能": [], "特性": "", "装备": [], "饰品": [], "内丹": []}
+
+    tables = panel.find_all("table", class_="tb02")
+    if tables:
+        sections["属性"] = _tb02_to_dict(tables[0])
+
+    zizi = panel.find("table", class_=re.compile(r"petZiZhiTb"))
+    if zizi:
+        sections["资质"] = _tb02_to_dict(zizi)
+
+    skill_grid = panel.find("div", id="pet_skill_grid_con")
+    if skill_grid:
+        names: List[str] = []
+        for img in skill_grid.find_all("img"):
+            n = img.get("data_store_name")
+            if n:
+                names.append(n)
+        sections["技能"] = names
+
+    h4s = panel.find_all("h4")
+    for h4 in h4s:
+        t = h4.get_text(strip=True)
+        if t.startswith("特性"):
+            nxt = h4.find_next_sibling("div")
+            if nxt:
+                sections["特性"] = nxt.get_text(strip=True)
+
+    neidan_tb = panel.find("table", id="RolePetNeidan")
+    if neidan_tb:
+        for tr in neidan_tb.find_all("tr"):
+            th = tr.find("th")
+            tds = tr.find_all("td")
+            if th and len(tds) >= 2:
+                sections["内丹"].append(
+                    {"名称": th.get_text(strip=True), "层数": tds[-1].get_text(strip=True)}
+                )
+
+    return sections
+
+
+def _extract_item_sections(soup: BeautifulSoup) -> Dict[str, Any]:
+    panel = soup.find("p", id="equip_desc_panel")
+    if not panel:
+        return {}
+    raw = panel.get_text("\n", strip=True)
+    return {
+        "属性原文": raw,
+        "伤害": _re_first(r"伤害\s*\+?\s*([\d]+)", raw),
+        "命中": _re_first(r"命中\s*\+?\s*([\d]+)", raw),
+        "防御": _re_first(r"防御\s*\+?\s*([\d]+)", raw),
+        "灵力": _re_first(r"灵力\s*\+?\s*([\d]+)", raw),
+        "气血": _re_first(r"气血\s*\+?\s*([\d]+)", raw),
+        "敏捷": _re_first(r"敏捷\s*\+?\s*([\d]+)", raw),
+        "精炼等级": _re_first(r"精炼等级\s*(\d+)", raw),
+        "特技": _re_first(r"特技[：:]\s*([^\n]+)", raw),
+        "特效": _re_first(r"特效[：:]\s*([^\n]+)", raw),
+    }
+
+
+def _re_first(pat: str, text: str) -> Optional[str]:
+    m = re.search(pat, text)
+    return m.group(1).strip() if m else None
+
+
+def extract_structured_payload(html: str, url: str) -> Dict[str, Any]:
+    """
+    统一入口：返回带分类与分块的业务 JSON，供 goods_record.payload_json 存储。
+    """
+    soup = BeautifulSoup(html, "lxml")
+    cat, sub, ctx = classify_cbg_page(html)
+    de = DataExtractor()
+    flat = de.extract_game_equip_info(html, url)
+
+    eid = extract_eid_from_url(url)
+    goods_no = flat.get("编号") or eid
+
+    payload: Dict[str, Any] = {
+        "schema_version": 1,
+        "product_type": cat,
+        "category_code": cat,
+        "sub_category_code": sub,
+        "classification": ctx,
+        "eid": eid,
+        "goods_no": goods_no,
+        "source_url": url,
+        "basic": {
+            "亮点": flat.get("亮点"),
+            "编号": goods_no,
+            "卖家": flat.get("卖家"),
+            "卖家ID": flat.get("卖家ID"),
+            "是否上架": flat.get("是否上架"),
+            "价格": flat.get("价格"),
+            "是否接受还价": flat.get("是否接受还价"),
+            "出售剩余时间": flat.get("出售剩余时间"),
+        },
+        "sections": {},
+    }
+
+    basic_keys = {
+        "亮点",
+        "编号",
+        "卖家",
+        "卖家ID",
+        "是否上架",
+        "价格",
+        "是否接受还价",
+        "出售剩余时间",
+    }
+
+    if cat == "CHAR":
+        payload["sections"]["角色与详情"] = {
+            k: v for k, v in flat.items() if k not in basic_keys and v
+        }
+
+    elif cat == "SUMMON":
+        payload["sections"]["召唤兽"] = _extract_pet_sections(soup)
+        payload["sections"]["商品信息补充"] = {
+            k: v for k, v in flat.items() if k not in basic_keys and v
+        }
+
+    else:  # ITEM
+        payload["sections"]["道具详情"] = _extract_item_sections(soup)
+        payload["sections"]["商品信息补充"] = {
+            k: v for k, v in flat.items() if k not in basic_keys and v
+        }
+
+    return payload
+
+
+def merge_flat_for_display(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """GUI 列表展示用：合并 basic + 关键 sections 为一层键值（简化）"""
+    out: Dict[str, Any] = {}
+    out.update(payload.get("basic") or {})
+    out["分类"] = payload.get("category_code")
+    out["商品类型"] = payload.get("product_type") or payload.get("category_code")
+    out["子类"] = payload.get("sub_category_code") or ""
+    ch = payload.get("children")
+    if isinstance(ch, list) and ch:
+        out["关联商品数"] = len(ch)
+        for i, c in enumerate(ch[:20], 1):
+            if not isinstance(c, dict):
+                continue
+            label = f"关联{i}_{c.get('product_type') or c.get('category_code') or '?'}"
+            name = (c.get("basic") or {}).get("亮点") or c.get("goods_no") or ""
+            out[label] = str(name)[:200]
+    ct = payload.get("character_tabs")
+    if isinstance(ct, dict) and ct:
+        out["角色Tab已抓取"] = ",".join(
+            k for k, v in ct.items() if isinstance(v, dict) and v.get("extracted") and not v.get("error")
+        )
+    if payload.get("sections"):
+        sec = payload["sections"]
+        if "角色与详情" in sec and isinstance(sec["角色与详情"], dict):
+            out.update(sec["角色与详情"])
+        if "召唤兽" in sec and isinstance(sec["召唤兽"], dict):
+            for k, v in sec["召唤兽"].items():
+                if isinstance(v, (dict, list)):
+                    out[k] = str(v)[:500]
+                else:
+                    out[k] = v
+        if "道具详情" in sec:
+            out.update({f"道具_{k}": v for k, v in sec["道具详情"].items() if v})
+    return out

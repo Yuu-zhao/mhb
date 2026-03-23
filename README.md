@@ -1,285 +1,107 @@
-# 网页抓取与数据库存储工具
+# 规则页爬取工具
 
-这是一个用于抓取网页内容并存储到数据库的Python工具。
+抓取藏宝阁等规则页（如 `html/rule` 下示例页）的页面数据，通过桌面 GUI 输入 URL、自动处理登录、展示核心抽取结果并支持落库。
 
-## 功能特性
+## 功能
 
-- 🎨 **可视化GUI界面**：简单易用的图形界面，无需命令行
-- 自动抓取网页内容（标题和正文）
-- 将数据存储到SQLite数据库
-- 支持自定义请求头
-- **支持需要登录的页面（Cookie和Selenium两种方式）**
-- **支持JavaScript渲染的页面（Selenium）**
-- 数据预览功能，抓取前可查看内容
-- 查看已保存的数据列表和详情
-- Cookie文件管理（保存/加载）
-- 完善的错误处理和日志记录
+- **桌面 GUI**：左侧 **已录入主商品列表**（点击加载详情）；右侧输入 URL → **可选「抓取角色全部 Tab」**（Playwright 依次点「人物/修炼、技能、道具/法宝…」并结构化落库）→ **可选「深度爬取关联」**（再抓子商品详情）→ **分 Tab 可滚动展示** → **保存/更新**（同编号 upsert）
+- **登录处理**：若检测到需要登录，弹窗提示后打开浏览器，手动登录后自动保存登录态并继续抓取
+- **核心数据**：按规则从页面抽取（编号、价格、门派、亮点、修炼等）；角色类可带 `children[]` 关联子商品
+- **落库**：`goods_record` 含 `product_type`、`parent_goods_no`；主商品带关联时调用 `save_goods_bundle` 写入主行 + 子行；兼容表 `page_data` 仍存扁平快照；详见 [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md)
+- **分类与扩展**：参考 `html/` 下各类型示例（`rule/` 角色、`zhaohuanshou/` 召唤兽、`daoju/` 武器、`lingshi/` 灵饰等），在 `cbg_catalog` / `cbg_classification` / `cbg_extractors` 中扩展新类型；关联 URL 抽取见 `character_links.py`
 
-## 安装依赖
+## 环境要求
+
+- Python 3.8+
+- 依赖见 `requirements.txt`
+
+## 安装
+
+### macOS（Homebrew Python 常见：无 tkinter）
+
+若用 `brew install python@3.13` 装的 Python，默认**没有** Tk 图形库，运行 GUI 会报 `No module named '_tkinter'`。请先安装带 Tk 的解释器，并用它**重建**虚拟环境：
+
+```bash
+brew install python-tk@3.13
+cd /path/to/mhb
+rm -rf .venv
+"$(brew --prefix python-tk@3.13)/bin/python3" -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+playwright install chromium
+```
+
+也可改用 [python.org](https://www.python.org/downloads/) 官方 macOS 安装包（自带 tkinter），再 `python3 -m venv .venv`。
+
+### 通用
 
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
 
-## 使用方法
+## 使用
 
-### 🎨 Web GUI界面（推荐，最简单，跨平台）
-
-启动Web界面：
-```bash
-python web_gui.py
-```
-
-然后在浏览器中访问：`http://127.0.0.1:5000`
-
-界面功能：
-- ✅ 输入URL地址
-- ✅ 设置Cookie（支持从文件加载）
-- ✅ 选择抓取方法（Requests或Selenium）
-- ✅ 实时预览抓取的数据
-- ✅ 一键保存到数据库
-- ✅ 查看已保存的数据列表
-- ✅ 现代化Web界面，无需安装GUI库
-
-**注意**：如果遇到tkinter问题（macOS常见），请使用Web GUI (`web_gui.py`)
-
-### 命令行使用
-
-#### 基本使用（无需登录的页面）
+### 启动桌面 GUI（推荐）
 
 ```bash
-python main.py <URL>
+./run_gui.sh
 ```
 
-示例：
-```bash
-python main.py https://www.example.com
-```
-
-### 需要登录的页面
-
-#### 方法1：使用Cookie（推荐，速度快）
-
-**步骤1：从浏览器获取Cookie**
-1. 在浏览器中打开目标网站并登录
-2. 按 `F12` 打开开发者工具
-3. 切换到 `Application`（应用程序）标签
-4. 左侧选择 `Cookies` -> 选择网站域名
-5. 复制所有Cookie的name和value，格式如：`name1=value1; name2=value2`
-
-**步骤2：使用Cookie抓取**
+或：
 
 ```bash
-# 使用Cookie字符串
-python main_with_login.py <URL> --method requests --cookie "name1=value1; name2=value2"
-
-# 使用Cookie文件（JSON格式）
-python main_with_login.py <URL> --method requests --cookie-file cookies.json
+python3 gui_app.py
 ```
 
-示例：
+### 操作步骤
+
+1. 在「页面地址」输入目标 URL（如藏宝阁商品页），按需勾选 **深度爬取关联（角色）**，回车或点击 **开始爬取**。
+2. 若需登录：会弹出「需要登录」窗口，点击 **打开浏览器登录**，在浏览器中完成登录，程序检测到登录成功后会保存登录态并自动再次抓取。
+3. 抓取完成后在右侧 **分 Tab 区域** 查看概览、基本信息、各板块、关联商品与完整 JSON（内容多时可滚动）。
+4. 点击 **保存 / 更新到数据库**；同一 `goods_no` 会更新。左侧列表可点选已保存主商品查看详情（与爬取后共用同一展示组件）。
+
+### 数据库
+
+- 文件：`page_data.db`（首次保存时自动创建）
+- **`goods_category`**：商品分类目录（角色 / 召唤兽 / 道具及子类），启动时从 `cbg_catalog.py` 种子数据写入
+- **`goods_record`**：主表，`goods_no` 唯一；列含 `product_type`、`parent_goods_no`（关联子商品指向主角色）；`payload_json` 存 `basic` + `sections` + 可选 `children`
+- **`page_data`**：兼容旧用法，存 `url`、`title`、`content`、`extracted_data`（扁平 JSON）
+
+查看示例：
+
 ```bash
-python main_with_login.py "https://xyq.cbg.163.com/equip?s=150&eid=..." --method requests --cookie "your_cookie_string"
+sqlite3 page_data.db "SELECT goods_no, product_type, parent_goods_no, category_code, sub_category_code, updated_at FROM goods_record;"
+sqlite3 page_data.db "SELECT id, url, title, created_at FROM page_data;"
 ```
 
-#### 方法2：使用Selenium（支持JavaScript渲染）
-
-**安装ChromeDriver：**
-```bash
-# macOS
-brew install chromedriver
-
-# 或从官网下载：https://chromedriver.chromium.org/
-```
-
-**使用Selenium抓取：**
-```bash
-# 无头模式（不显示浏览器）
-python main_with_login.py <URL> --method selenium
-
-# 显示浏览器窗口（可以手动登录）
-python main_with_login.py <URL> --method selenium --selenium-headless=false
-```
-
-示例：
-```bash
-python main_with_login.py "https://xyq.cbg.163.com/equip?s=150&eid=..." --method selenium
-```
-
-### 在代码中使用
-
-#### 基本使用（无需登录）
-
-```python
-from scraper import WebScraper
-from database import DatabaseManager
-
-# 创建抓取器和数据库管理器
-scraper = WebScraper()
-db_manager = DatabaseManager()
-
-# 抓取网页
-page_data = scraper.fetch_page('https://www.example.com')
-
-if page_data:
-    # 保存到数据库
-    db_manager.save_page_data(
-        url=page_data['url'],
-        title=page_data['title'],
-        content=page_data['content']
-    )
-```
-
-#### 使用Cookie（需要登录的页面）
-
-```python
-from scraper import WebScraper
-from database import DatabaseManager
-from cookie_helper import CookieHelper
-
-# 创建抓取器（使用Session）
-scraper = WebScraper(use_session=True)
-
-# 设置Cookie（从浏览器复制）
-cookie_string = "name1=value1; name2=value2"
-scraper.set_cookies(cookie_string)
-
-# 或者从文件加载Cookie
-cookies = CookieHelper.load_cookies_from_file("cookies.json")
-scraper.set_cookies(cookies)
-
-# 抓取需要登录的页面
-page_data = scraper.fetch_page('https://xyq.cbg.163.com/equip?...')
-
-if page_data:
-    db_manager = DatabaseManager()
-    db_manager.save_page_data(
-        url=page_data['url'],
-        title=page_data['title'],
-        content=page_data['content']
-    )
-```
-
-#### 使用Selenium（支持JavaScript渲染）
-
-```python
-from selenium_scraper import SeleniumScraper
-from database import DatabaseManager
-
-# 创建Selenium抓取器
-scraper = SeleniumScraper(headless=True)
-
-try:
-    # 如果需要登录，先访问登录页面
-    scraper.driver.get("https://xyq.cbg.163.com/")
-    # 手动登录或使用自定义登录函数
-    input("请完成登录后按回车...")
-    
-    # 抓取目标页面
-    page_data = scraper.fetch_page('https://xyq.cbg.163.com/equip?...')
-    
-    if page_data:
-        db_manager = DatabaseManager()
-        db_manager.save_page_data(
-            url=page_data['url'],
-            title=page_data['title'],
-            content=page_data['content']
-        )
-finally:
-    scraper.close()
-```
-
-更多示例请查看 `login_example.py`
-
-## 项目结构
+## 项目结构（核心）
 
 ```
 mhb/
-├── web_gui.py           # 🌐 Web GUI界面（推荐使用，跨平台）
-├── gui_app.py           # 🎨 桌面GUI界面（需要tkinter）
-├── main.py              # 主程序入口（基本抓取）
-├── main_with_login.py   # 支持登录的主程序
-├── scraper.py           # 网页抓取模块（支持Cookie）
-├── selenium_scraper.py  # Selenium抓取模块（支持JavaScript）
-├── cookie_helper.py     # Cookie管理工具
-├── database.py          # 数据库模型和操作
-├── login_example.py     # 登录使用示例
-├── requirements.txt     # 依赖包列表
-├── README.md            # 说明文档
-├── QUICK_START.md       # 快速开始指南
-└── page_data.db         # SQLite数据库文件（运行后自动生成）
-```
-
-## 数据库结构
-
-数据存储在SQLite数据库 `page_data.db` 中，表结构如下：
-
-- `id`: 主键，自增
-- `url`: 页面URL
-- `title`: 页面标题
-- `content`: 页面正文内容
-- `created_at`: 创建时间
-
-## 查看数据库内容
-
-可以使用SQLite命令行工具查看数据：
-
-```bash
-sqlite3 page_data.db
-SELECT * FROM page_data;
-```
-
-或者使用Python：
-
-```python
-from database import DatabaseManager
-
-db = DatabaseManager()
-all_data = db.get_all_data()
-for data in all_data:
-    print(f"ID: {data.id}, URL: {data.url}, Title: {data.title}")
+├── gui_app.py              # 桌面 GUI（列表 + 详情 + 保存）
+├── gui_detail_view.py      # 可复用：分 Tab 商品详情展示
+├── scrape_helper.py        # 抓取 + 规则抽取 + 可选角色关联深度爬取
+├── character_links.py      # 从角色页 HTML 提取 equip 子链接
+├── role_tabs.py            # 角色详情 div.tabs：切换各 li#role_* 并调用抽取器
+├── login_state_manager.py  # 登录态管理（打开浏览器、保存/加载登录态）
+├── playwright_scraper.py   # Playwright 抓取（支持登录态）
+├── data_extractor.py       # 规则页数据抽取（infoList.goodsInfo、role_info_box 等）
+├── cbg_catalog.py          # 分类目录定义（可扩展）
+├── cbg_classification.py # 页面类型判定（DOM / kindid）
+├── cbg_extractors.py       # 分类型结构化抽取（角色/召唤兽/道具）
+├── database.py             # 数据库模型与保存（含 goods_record）
+├── html/                   # 各类型页面样式样例（供抽取规则参考）
+├── DATABASE_SCHEMA.md      # 表结构与扩展说明
+├── cookie_helper.py        # Cookie 工具（登录态内部使用）
+├── run_gui.sh              # GUI 启动脚本
+├── requirements.txt
+└── page_data.db            # SQLite（运行后生成）
 ```
 
 ## 注意事项
 
-1. **请遵守网站的robots.txt和使用条款**
-2. **不要过于频繁地请求同一网站，避免被封IP**
-3. **使用Cookie时，注意Cookie的有效期，过期后需要重新获取**
-4. **使用Selenium时，需要安装Chrome浏览器和ChromeDriver**
-5. **某些网站有反爬虫机制，可能需要：**
-   - 设置更完整的请求头
-   - 使用代理IP
-   - 添加请求延迟
-   - 使用更真实的User-Agent
-
-## 获取Cookie的方法
-
-### 方法1：从Chrome浏览器获取
-
-1. 打开目标网站并登录
-2. 按 `F12` 打开开发者工具
-3. 切换到 `Application` 标签（或 `存储`）
-4. 左侧展开 `Cookies`，选择网站域名
-5. 复制所有Cookie的name和value
-
-### 方法2：使用浏览器扩展
-
-安装 `EditThisCookie` 或类似扩展，可以一键导出所有Cookie
-
-### 方法3：使用Selenium自动获取
-
-运行 `login_example.py` 示例3，手动登录后会自动保存Cookie
-
-## 常见问题
-
-**Q: 提示"需要登录"怎么办？**  
-A: 使用 `main_with_login.py` 并提供Cookie，或使用Selenium方法
-
-**Q: 页面内容是空的或只有JavaScript代码？**  
-A: 使用Selenium方法，它可以执行JavaScript并渲染页面
-
-**Q: Cookie过期了怎么办？**  
-A: 重新从浏览器获取Cookie并更新
-
-**Q: Selenium报错找不到ChromeDriver？**  
-A: 确保已安装Chrome浏览器，并下载对应版本的ChromeDriver
+- 请遵守目标站点的使用条款与访问频率，避免滥用。
+- **登录态与 Cookie**：登录成功后会写入项目目录下的 `login_state_<域名>.json`（Playwright `storage_state`，内含 Cookie 及站点存储），下次「开始爬取」会自动加载，无需再手动贴 Cookie。
+- 若登录态过期，会再次被重定向到登录页，按提示重新在浏览器中登录一次即可覆盖该文件。
+- 桌面 GUI 依赖 **tkinter**；若报错 `_tkinter`，见上文「macOS（Homebrew Python 常见：无 tkinter）」。
