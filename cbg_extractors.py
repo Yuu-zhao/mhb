@@ -10,6 +10,14 @@ from bs4 import BeautifulSoup
 
 from cbg_classification import classify_cbg_page, extract_eid_from_url
 from data_extractor import DataExtractor
+from item_name_catalog import (
+    enrich_classification_page_type,
+    enrich_classification_with_item_name,
+    item_meta_to_sub_category_code,
+    match_longest_known_name_in_text,
+    resolve_item_name_to_type,
+    resolve_page_type_zh_to_subcode,
+)
 
 
 def _find_goods_info(soup: BeautifulSoup):
@@ -78,14 +86,24 @@ def _extract_pet_sections(soup: BeautifulSoup) -> Dict[str, Any]:
     return sections
 
 
+def _extract_forge_original_shape(text: str) -> Optional[str]:
+    """如「铸斧原始造型：晓风残月」→ 晓风残月（武器造型枚举名）。"""
+    if not text:
+        return None
+    m = re.search(r"铸\w*原始造型[：:]\s*(\S+)", text)
+    return m.group(1).strip() if m else None
+
+
 def _extract_item_sections(soup: BeautifulSoup) -> Dict[str, Any]:
     panel = soup.find("p", id="equip_desc_panel")
     if not panel:
         return {}
     raw = panel.get_text("\n", strip=True)
-    return {
+    out: Dict[str, Any] = {
         "属性原文": raw,
         "伤害": _re_first(r"伤害\s*\+?\s*([\d]+)", raw),
+        "法术伤害": _re_first(r"法术伤害\s*\+?\s*([\d]+)", raw),
+        "固定伤害": _re_first(r"固定伤害\s*\+?\s*([\d]+)", raw),
         "命中": _re_first(r"命中\s*\+?\s*([\d]+)", raw),
         "防御": _re_first(r"防御\s*\+?\s*([\d]+)", raw),
         "灵力": _re_first(r"灵力\s*\+?\s*([\d]+)", raw),
@@ -94,12 +112,93 @@ def _extract_item_sections(soup: BeautifulSoup) -> Dict[str, Any]:
         "精炼等级": _re_first(r"精炼等级\s*(\d+)", raw),
         "特技": _re_first(r"特技[：:]\s*([^\n]+)", raw),
         "特效": _re_first(r"特效[：:]\s*([^\n]+)", raw),
+        "原始造型": _extract_forge_original_shape(raw),
     }
+    return out
 
 
 def _re_first(pat: str, text: str) -> Optional[str]:
     m = re.search(pat, text)
     return m.group(1).strip() if m else None
+
+
+_LING_SHI_PAGE_TYPES = frozenset({"戒指", "耳饰", "手镯", "佩饰"})
+
+
+def _guess_item_display_name(soup: BeautifulSoup, flat: Dict[str, Any], item_sections: Dict[str, Any]) -> str:
+    """从道具详情面板 / 扁平字段中推测装备名称，供名称枚举匹配（对齐 html/daoju、html/lingshi 模板）。"""
+    page_ty = (flat.get("类型") or "").strip()
+    raw_panel = ""
+    panel = soup.find("p", id="equip_desc_panel")
+    if panel:
+        raw_panel = panel.get_text("\n", strip=True)
+
+    # 武器：铸X原始造型：标准名（daoju 模板）
+    shape = (item_sections or {}).get("原始造型") or _extract_forge_original_shape(raw_panel)
+    if shape and resolve_item_name_to_type(shape):
+        return shape
+
+    # 灵饰：列表行「ID：玉蝶翩」即标准名（lingshi 模板）
+    if page_ty in _LING_SHI_PAGE_TYPES:
+        sid = (flat.get("展示ID") or "").strip()
+        if sid and resolve_item_name_to_type(sid):
+            return sid
+
+    if raw_panel:
+        first = raw_panel.split("\n")[0].strip()
+        if resolve_item_name_to_type(first):
+            return first
+        hit = match_longest_known_name_in_text(raw_panel)
+        if hit:
+            return hit[0]
+    raw2 = (item_sections or {}).get("属性原文") or ""
+    if raw2:
+        hit = match_longest_known_name_in_text(raw2)
+        if hit:
+            return hit[0]
+        first = raw2.split("\n")[0].strip()
+        if resolve_item_name_to_type(first):
+            return first
+    for key in ("名称", "装备名称", "道具名称", "展示ID"):
+        v = flat.get(key)
+        if v:
+            s = str(v).strip()
+            if s:
+                return s
+    hl = flat.get("亮点") or ""
+    if hl:
+        hit = match_longest_known_name_in_text(str(hl))
+        if hit:
+            return hit[0]
+    return ""
+
+
+def _apply_item_resolved_category(payload: Dict[str, Any], flat: Dict[str, Any]) -> None:
+    """名称枚举优先，其次页面「类型」→ 重写 sub_category_code（与 cbg_catalog 细分子类一致）。"""
+    cls = payload.setdefault("classification", {})
+    enrich_classification_page_type(cls, page_type_zh=flat.get("类型"))
+
+    ir = cls.get("item_name_resolution")
+    sub: Optional[str] = None
+    source: Optional[str] = None
+
+    if isinstance(ir, dict) and ir.get("matched_name"):
+        meta = resolve_item_name_to_type(ir["matched_name"])
+        if meta:
+            sub = item_meta_to_sub_category_code(meta)
+            source = "name_enum"
+
+    if not sub:
+        sub = resolve_page_type_zh_to_subcode((flat.get("类型") or "").strip())
+        if sub:
+            source = "page_type"
+
+    if sub:
+        payload["sub_category_code"] = sub
+        cls["resolved_sub_category_code"] = sub
+        cls["sub_category_source"] = source
+        payload["category_code"] = "ITEM"
+        payload["product_type"] = "ITEM"
 
 
 def extract_structured_payload(html: str, url: str) -> Dict[str, Any]:
@@ -136,6 +235,17 @@ def extract_structured_payload(html: str, url: str) -> Dict[str, Any]:
         "sections": {},
     }
 
+    if cat == "ITEM":
+        payload["basic"].update(
+            {
+                "类型": flat.get("类型"),
+                "状态": flat.get("状态"),
+                "服务器": flat.get("服务器"),
+                "展示ID": flat.get("展示ID"),
+                "模版等级": flat.get("模版等级"),
+            }
+        )
+
     basic_keys = {
         "亮点",
         "编号",
@@ -145,6 +255,11 @@ def extract_structured_payload(html: str, url: str) -> Dict[str, Any]:
         "价格",
         "是否接受还价",
         "出售剩余时间",
+        "类型",
+        "状态",
+        "服务器",
+        "展示ID",
+        "模版等级",
     }
 
     if cat == "CHAR":
@@ -159,10 +274,22 @@ def extract_structured_payload(html: str, url: str) -> Dict[str, Any]:
         }
 
     else:  # ITEM
-        payload["sections"]["道具详情"] = _extract_item_sections(soup)
+        item_detail = _extract_item_sections(soup)
+        payload["sections"]["道具详情"] = item_detail
         payload["sections"]["商品信息补充"] = {
             k: v for k, v in flat.items() if k not in basic_keys and v
         }
+        guessed = _guess_item_display_name(soup, flat, item_detail)
+        desc_blob = (item_detail.get("属性原文") or "") + "\n" + str(flat.get("亮点") or "")
+        payload["classification"] = enrich_classification_with_item_name(
+            payload.get("classification") or {},
+            item_name_hint=guessed or None,
+            description_text=desc_blob.strip() or None,
+        )
+        ir = payload["classification"].get("item_name_resolution")
+        if isinstance(ir, dict):
+            payload["item_name_resolution"] = ir
+        _apply_item_resolved_category(payload, flat)
 
     return payload
 
@@ -200,4 +327,15 @@ def merge_flat_for_display(payload: Dict[str, Any]) -> Dict[str, Any]:
                     out[k] = v
         if "道具详情" in sec:
             out.update({f"道具_{k}": v for k, v in sec["道具详情"].items() if v})
+    cls = payload.get("classification") or {}
+    ir = cls.get("item_name_resolution")
+    if isinstance(ir, dict) and ir.get("matched_name"):
+        out["名称识别"] = ir.get("matched_name")
+        out["名称大类"] = ir.get("major_category_zh") or ""
+        out["名称细类"] = ir.get("family_zh") or ""
+        out["名称子类码"] = ir.get("item_sub_code") or ""
+    rsub = cls.get("resolved_sub_category_code")
+    if rsub:
+        out["子类"] = rsub
+        out["子类来源"] = cls.get("sub_category_source") or ""
     return out

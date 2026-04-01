@@ -84,6 +84,7 @@ mhb/
 ├── scrape_helper.py        # 抓取 + 规则抽取 + 可选角色关联深度爬取
 ├── character_links.py      # 从角色页 HTML 提取 equip 子链接
 ├── role_tabs.py            # 角色详情 div.tabs：切换各 li#role_* 并调用抽取器
+├── item_name_catalog.py    # 灵饰/武器/装备名称枚举 → 类型属性（大类、细类、ITEM_* 子码）
 ├── login_state_manager.py  # 登录态管理（打开浏览器、保存/加载登录态）
 ├── playwright_scraper.py   # Playwright 抓取（支持登录态）
 ├── data_extractor.py       # 规则页数据抽取（infoList.goodsInfo、role_info_box 等）
@@ -92,6 +93,8 @@ mhb/
 ├── cbg_extractors.py       # 分类型结构化抽取（角色/召唤兽/道具）
 ├── database.py             # 数据库模型与保存（含 goods_record）
 ├── html/                   # 各类型页面样式样例（供抽取规则参考）
+│   ├── daoju/              # 道具·武器等新模板（类型/状态/li.names + equip_desc_panel）
+│   └── lingshi/            # 灵饰模板（类型：耳饰 等 + 展示ID=标准名）
 ├── DATABASE_SCHEMA.md      # 表结构与扩展说明
 ├── cookie_helper.py        # Cookie 工具（登录态内部使用）
 ├── run_gui.sh              # GUI 启动脚本

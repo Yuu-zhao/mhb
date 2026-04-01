@@ -35,6 +35,11 @@ CATEGORIES: List[Tuple[str, Optional[str], str, int]] = [
     ("ITEM_WEAPON", "ITEM", "武器", 31),
     ("ITEM_ARMOR", "ITEM", "防具", 32),
     ("ITEM_LINGSHI", "ITEM", "灵饰", 33),
+    # 灵饰（三级，与页面「类型：戒指/耳饰/…」及名称枚举一致）
+    ("ITEM_LINGSHI_RING", "ITEM", "灵饰·戒指", 331),
+    ("ITEM_LINGSHI_EAR", "ITEM", "灵饰·耳饰", 332),
+    ("ITEM_LINGSHI_BRACELET", "ITEM", "灵饰·手镯", 333),
+    ("ITEM_LINGSHI_PENDANT", "ITEM", "灵饰·佩饰", 334),
     ("ITEM_ANCIENT_JADE", "ITEM", "上古玉魄", 34),
     ("ITEM_OTHER", "ITEM", "其它道具", 39),
 ]

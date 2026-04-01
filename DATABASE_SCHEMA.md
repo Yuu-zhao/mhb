@@ -29,7 +29,7 @@
 | `sub_category_code` | 道具子类（武器、灵饰等），可为空 |
 | `product_type` | 与 `category_code` 同语义，便于展示与查询（CHAR/ITEM/SUMMON） |
 | `parent_goods_no` | 若本行由**角色详情深度爬取**写入的关联商品（装备/召唤兽等），指向主角色 `goods_no`；主商品此列为空 |
-| `payload_json` | 结构化数据：`basic`、`sections`、`classification`、可选 `character_tabs`（角色页各 Tab 切换后抓取）、可选 `children`（主商品内嵌关联列表）等 |
+| `payload_json` | 结构化数据：`basic`、`sections`、`classification`（含 `item_name_resolution`：按装备名称枚举解析的大类/细类/子类码）、可选 `character_tabs`、可选 `children` 等 |
 | `schema_version` | 载荷版本，便于后续迁移 |
 
 **关联入库**：保存带 `children[]` 的主商品时，调用 `DatabaseManager.save_goods_bundle`：主行一条 + 每个子商品单独 upsert 一行并写入 `parent_goods_no`。

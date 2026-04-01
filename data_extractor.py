@@ -40,7 +40,13 @@ class DataExtractor:
             result["编号"] = self._extract_li_text(goods_info, "编号：")
             result["卖家"] = self._extract_li_text(goods_info, "卖家：")
             result["卖家ID"] = self._extract_seller_id(goods_info)
-            result["是否上架"] = self._extract_li_text(goods_info, "是否上架：")
+            # 新模板：状态：上架中；旧模板：是否上架：已上架
+            status_new = self._extract_li_text(goods_info, "状态：")
+            status_old = self._extract_li_text(goods_info, "是否上架：")
+            result["状态"] = status_new or status_old
+            result["是否上架"] = self._derive_onsale_status(status_new, status_old)
+            result["类型"] = self._extract_li_text(goods_info, "类型：")
+            result.update(self._extract_names_row(goods_info))
             result["价格"] = self._extract_price(goods_info)
             result["是否接受还价"] = self._extract_bargain(goods_info)
             result["出售剩余时间"] = self._extract_li_text(goods_info, "出售剩余时间：")
@@ -54,17 +60,18 @@ class DataExtractor:
                 result.update(self._extract_character_basic(role_box))
                 result.update(self._extract_cultivation(role_box))
             else:
-                logger.warning("⚠️ 未找到 role_info_box")
+                logger.debug("未找到 role_info_box（非角色页可忽略）")
 
             # -------------------------------------------------
-            # 四、关键字段校验
+            # 四、关键字段校验（仅人物详情页）
             # -------------------------------------------------
-            required = ["编号", "价格", "级别", "门派"]
-            missing = [f for f in required if not result.get(f)]
-            if missing:
-                logger.warning(f"⚠️ 关键字段缺失: {missing}")
-            else:
-                logger.info("✅ 关键字段完整")
+            if soup.find("div", id="role_info_box"):
+                required = ["编号", "价格", "级别", "门派"]
+                missing = [f for f in required if not result.get(f)]
+                if missing:
+                    logger.warning(f"⚠️ 关键字段缺失: {missing}")
+                else:
+                    logger.info("✅ 关键字段完整")
 
         except Exception as e:
             logger.exception(f"❌ 数据抽取异常: {e}")
@@ -100,6 +107,37 @@ class DataExtractor:
                     if text:
                         return text
         return None
+
+    def _derive_onsale_status(self, status_new: Optional[str], status_old: Optional[str]) -> Optional[str]:
+        if status_old:
+            return status_old
+        if status_new:
+            if "上架" in status_new:
+                return "已上架" if "已" in status_new or "中" in status_new else status_new
+            return status_new
+        return None
+
+    def _extract_names_row(self, container) -> Dict[str, Optional[str]]:
+        """
+        新模板 li.names：服务器 / ID（展示名） / 等级
+        例：ID：玉蝶翩（灵饰名）、ID：九州海沸（坤）（武器昵称）
+        """
+        out: Dict[str, Optional[str]] = {}
+        for li in container.find_all("li", class_=True):
+            if "names" not in (li.get("class") or []):
+                continue
+            text = li.get_text(" ", strip=True).replace("\xa0", " ")
+            m_srv = re.search(r"服务器[：:]\s*(.+?)\s*ID[：:]", text)
+            if m_srv:
+                out["服务器"] = m_srv.group(1).strip()
+            m_id = re.search(r"ID[：:]\s*(.+?)\s*等级[：:]", text)
+            if m_id:
+                out["展示ID"] = m_id.group(1).strip()
+            m_lv = re.search(r"等级[：:]\s*([0-9]+)", text)
+            if m_lv:
+                out["模版等级"] = m_lv.group(1).strip()
+            break
+        return out
 
     def _extract_highlights(self, container) -> Optional[str]:
         for li in container.find_all("li"):
